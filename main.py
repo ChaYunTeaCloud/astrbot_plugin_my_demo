@@ -7,9 +7,9 @@ from astrbot.core.provider.register import llm_tools
 
 from .tools import create_list_sub_agents_tool
 
+_META = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "metadata.yaml"), encoding="utf-8"))
 
-@register("astrbot_plugin_my_demo", "ChaYunTeaCloud",
-          "SubAgent 路由层插件", "0.1.0")
+@register(_META["name"], _META["author"], _META["desc"], _META["version"])
 class SubAgentRouter(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
@@ -25,7 +25,7 @@ class SubAgentRouter(Star):
 
     @filter.on_llm_request()
     async def _on_llm_request(self, event: AstrMessageEvent, request) -> None:
-        """非嵌套模式: 移除 delegate_to_sub_agent\n嵌套模式: 注入 list_sub_agents 到请求中"""
+        """非嵌套模式: 移除 delegate_to_sub_agent;嵌套模式: 注入 list_sub_agents 到请求中"""
         if not hasattr(request, "func_tool") or not request.func_tool:
             return
 
