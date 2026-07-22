@@ -26,11 +26,11 @@ class SubAgentRouter(Star):
     async def _on_llm_request(self, event: AstrMessageEvent, request) -> None:
         """嵌套模式: 注入 list_sub_agents 和 delegate_to_sub_agent 到请求中"""
         if not hasattr(request, "func_tool") or not request.func_tool:
-            logger.error("astrbot_plugin_my_demo: 请求中没有工具集")
+            logger.debug("astrbot_plugin_my_demo: 请求中没有工具集")
             return
         tools = getattr(request.func_tool, "tools", None)   # 获取当前请求中的工具列表
         if not isinstance(tools, list):
-            logger.error("astrbot_plugin_my_demo: 工具列表不是列表")
+            logger.debug("astrbot_plugin_my_demo: 工具列表不是列表")
             return
 
         if not self.nested_mode:    # 如果不是嵌套模式，直接返回
