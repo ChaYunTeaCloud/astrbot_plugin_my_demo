@@ -96,7 +96,7 @@ def create_delegate_to_sub_agent(star_context):
 
             # 注入路由工具
             toolset.add_tool(create_list_sub_agents_tool(orch))
-            toolset.add_tool(create_delegate_tool(star_context))
+            toolset.add_tool(create_delegate_to_sub_agent(star_context))
 
             resp = await ctx.tool_loop_agent(    # 调用目标 SubAgent
                 event=event, chat_provider_id=prov_id,    # 传递当前事件和当前聊天提供者 ID
