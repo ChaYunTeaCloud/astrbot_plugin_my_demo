@@ -1,6 +1,7 @@
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
+from astrbot.api import logger
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
 from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.run_context import ContextWrapper
