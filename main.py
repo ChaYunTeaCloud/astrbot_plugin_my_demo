@@ -25,6 +25,7 @@ class SubAgentRouter(Star):
 
     @filter.on_llm_request()
     async def _on_llm_request(self, event: AstrMessageEvent, request) -> None:
+        """非嵌套模式: 移除 delegate_to_sub_agent\n嵌套模式: 注入 list_sub_agents 到请求中"""
         if not hasattr(request, "func_tool") or not request.func_tool:
             return
 
