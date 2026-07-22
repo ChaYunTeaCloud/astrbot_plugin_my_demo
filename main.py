@@ -4,7 +4,7 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 
-from .tools import create_list_sub_agents_tool
+from .tools import create_list_sub_agents_tool, create_delegate_tool
 
 _META = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "metadata.yaml"), encoding="utf-8"))
 
