@@ -3,9 +3,6 @@ import yaml, os
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from astrbot.core.agent.tool import ToolSet
-from astrbot.core.agent.handoff import HandoffTool
-from astrbot.core.provider.register import llm_tools
 
 from .tools import create_list_sub_agents_tool
 
@@ -27,76 +24,19 @@ class SubAgentRouter(Star):
 
     @filter.on_llm_request()
     async def _on_llm_request(self, event: AstrMessageEvent, request) -> None:
-        """非嵌套模式: 移除 delegate_to_sub_agent;嵌套模式: 注入 list_sub_agents 到请求中"""
+        """嵌套模式: 注入 list_sub_agents 和 delegate_to_sub_agent 到请求中"""
         if not hasattr(request, "func_tool") or not request.func_tool:
+            logger.error("astrbot_plugin_my_demo: 请求中没有工具集")
             return
-
-        tools = getattr(request.func_tool, "tools", None)
+        tools = getattr(request.func_tool, "tools", None)   # 获取当前请求中的工具列表
         if not isinstance(tools, list):
+            logger.error("astrbot_plugin_my_demo: 工具列表不是列表")
             return
 
-        if not self.nested_mode:
-            # 移除 delegate_to_sub_agent
-            request.func_tool.tools = [
-                t for t in tools
-                if getattr(t, "name", None) != "delegate_to_sub_agent"
-            ]
+        if not self.nested_mode:    # 如果不是嵌套模式，直接返回
             return
 
-        # 嵌套模式：注入 list_sub_agents
-        if not any(getattr(t, "name", None) == "list_sub_agents" for t in tools):
-            orch = self.context.subagent_orchestrator
-            tools.append(create_list_sub_agents_tool(orch))
-            logger.debug("astrbot_plugin_my_demo: 注入 list_sub_agents")
-
-    @filter.llm_tool(name="delegate_to_sub_agent")
-    async def delegate_to_sub_agent(
-        self, event: AstrMessageEvent,
-        agent_name: str,
-        task: str,
-    ) -> str:
-        """将任务委派给指定的 SubAgent 并返回结果。
-
-        Args:
-            agent_name(string): 目标 SubAgent 名称。先用 list_sub_agents 查看可用列表
-            task(string): 完整的任务描述
-        """
+        # 注入 list_sub_agents 和 delegate_to_sub_agent 工具
         orch = self.context.subagent_orchestrator
-        handoff = None
-        for h in orch.handoffs:
-            if h.agent.name == agent_name:
-                handoff = h
-                break
-        if not handoff:
-            return f"未找到 Agent: {agent_name}"
-
-        # 根据 SubAgent 的 tools 配置构建 ToolSet
-        agent_tools = handoff.agent.tools
-
-        if agent_tools == []:
-            toolset = None
-        elif agent_tools is None:
-            toolset = ToolSet()
-            for t in llm_tools.func_list:
-                if isinstance(t, HandoffTool):
-                    continue
-                if t.active:
-                    toolset.add_tool(t)
-        else:
-            toolset = ToolSet()
-            for name in agent_tools:
-                t = llm_tools.get_func(name)
-                if t and t.active:
-                    toolset.add_tool(t)
-
-        umo = event.unified_msg_origin
-        prov_id = handoff.provider_id or await self.context.get_current_chat_provider_id(umo)
-
-        llm_resp = await self.context.tool_loop_agent(
-            event=event,
-            chat_provider_id=prov_id,
-            prompt=task,
-            system_prompt=handoff.agent.instructions,
-            tools=toolset,
-        )
-        return llm_resp.completion_text or "(空回复)"
+        tools.append(create_list_sub_agents_tool(orch))
+        tools.append(create_delegate_tool(self.context))

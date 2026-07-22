@@ -1,9 +1,11 @@
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
+from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.provider.register import llm_tools
 
 
 def create_list_sub_agents_tool(orch):
@@ -50,3 +52,66 @@ def _build_agents_info(orch) -> str:
                 tools_str = ", ".join(str(t) for t in tools)
             lines.append(f"  - {name}: {desc} [工具: {tools_str}]")
     return "\n".join(lines)
+
+def create_delegate_tool(star_context):
+    @dataclass
+    class _Tool(FunctionTool[AstrAgentContext]):
+        name: str = "delegate_to_sub_agent"
+        description: str = (
+            "将任务委派给指定的 SubAgent 并返回结果。"
+            "先用 list_sub_agents 查看可用列表。"
+        )
+        parameters: dict = Field(
+            default_factory=lambda: {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "目标 SubAgent 名称"},
+                    "task": {"type": "string", "description": "完整的任务描述，需自包含所有上下文"},
+                },
+                "required": ["agent_name", "task"],
+            }
+        )
+
+        async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+            agent_name = kwargs["agent_name"]
+            task = kwargs["task"]
+            event = context.context.event
+            ctx = context.context.context
+
+            orch = star_context.subagent_orchestrator
+            for h in orch.handoffs:
+                if h.agent.name == agent_name:
+                    handoff = h
+                    break
+            else:
+                return f"未找到 Agent: {agent_name}"
+
+            toolset = _build_toolset(handoff.agent.tools)
+            umo = event.unified_msg_origin
+            prov_id = handoff.provider_id or await ctx.get_current_chat_provider_id(umo)
+
+            resp = await ctx.tool_loop_agent(
+                event=event, chat_provider_id=prov_id,
+                prompt=task, system_prompt=handoff.agent.instructions,
+                tools=toolset,
+            )
+            return resp.completion_text or "(空回复)"
+
+    return _Tool()
+
+
+def _build_toolset(agent_tools):
+    if agent_tools == []:
+        return None
+    toolset = ToolSet()
+    if agent_tools is None:
+        for t in llm_tools.func_list:
+            if isinstance(t, HandoffTool) or not t.active:
+                continue
+            toolset.add_tool(t)
+    else:
+        for name in agent_tools:
+            t = llm_tools.get_func(name)
+            if t and t.active:
+                toolset.add_tool(t)
+    return toolset
