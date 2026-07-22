@@ -11,8 +11,8 @@ from astrbot.core.provider.register import llm_tools
 
 def create_list_sub_agents_tool(orch):
     """工厂函数：接收 orchestrator,返回已注入数据的 list_sub_agents 工具。 args: orch - orchestrator"""
-    info = _build_agents_info(orch)
 
+    # 构建 SubAgent 信息字符串
     def _build_agents_info(orch) -> str:
         """ 构建 SubAgent 信息字符串。 args: orch - orchestrator"""
         lines = ["当前可用的 SubAgent:\n"]
@@ -31,6 +31,7 @@ def create_list_sub_agents_tool(orch):
                     tools_str = ", ".join(str(t) for t in tools)
                 lines.append(f"  - {name}: {desc} [工具: {tools_str}]")
         return "\n".join(lines)
+    info = _build_agents_info(orch)
 
     @dataclass
     class _Tool(FunctionTool[AstrAgentContext]):
