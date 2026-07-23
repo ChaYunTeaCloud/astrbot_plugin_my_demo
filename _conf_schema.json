@@ -4,5 +4,12 @@
     "description": "嵌套委派模式",
     "hint": "开启后 list_sub_agents 工具被动态注入，关闭后完全不可见",
     "default": false
+  },
+  "router_agent": {
+    "type": "string",
+    "description": "路由代理名称",
+    "hint": "用于路由子智能体",
+    "default": ""
   }
+  
 }
