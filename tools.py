@@ -7,6 +7,20 @@ from astrbot.core.agent.handoff import HandoffTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.provider.register import llm_tools
+from astrbot.core.tools.computer_tools import (
+    CuaKeyboardTypeTool,
+    CuaMouseClickTool,
+    CuaScreenshotTool,
+    ExecuteShellTool,
+    FileDownloadTool,
+    FileEditTool,
+    FileReadTool,
+    FileUploadTool,
+    FileWriteTool,
+    GrepTool,
+    LocalPythonTool,
+    PythonTool,
+)
 
 
 def create_list_sub_agents_tool(orch):
@@ -91,7 +105,7 @@ def create_delegate_to_sub_agent(star_context):
             else:
                 return f"未找到 Agent: {agent_name}"    # 如果未找到目标 SubAgent，返回错误信息
 
-            toolset = _build_toolset(handoff.agent.tools, star_context.get_llm_tool_manager())    # 构建工具集
+            toolset = _build_toolset(handoff.agent.tools, star_context.get_llm_tool_manager(), ctx, event)    # 构建工具集
             umo = event.unified_msg_origin    # 获取统一消息来源
             prov_id = handoff.provider_id or await ctx.get_current_chat_provider_id(umo)    # 获取当前聊天提供者 ID
 
