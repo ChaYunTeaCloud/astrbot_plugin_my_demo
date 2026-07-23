@@ -37,6 +37,5 @@ class SubAgentRouter(Star):
             return
 
         # 注入 list_sub_agents 和 delegate_to_sub_agent 工具
-        orch = self.context.subagent_orchestrator
-        tools.append(create_list_sub_agents_tool(orch))
+        tools.append(create_list_sub_agents_tool(self.context.subagent_orchestrator))
         tools.append(create_delegate_to_sub_agent(self.context))
