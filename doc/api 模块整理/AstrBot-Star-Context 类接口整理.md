@@ -1,7 +1,15 @@
 # AstrBot Context 类接口整理
 
-> 源码路径：`.venv/Lib/site-packages/astrbot/core/star/context.py`
+> 源码路径：`astrbot/core/star/context.py`
 > Context 是 Star 插件与 AstrBot 框架沟通的桥梁，所有方法均为插件开发者提供。
+
+Context 是一个典型的"上帝类"——方法超过 50 个，涉及 LLM 调用、Provider 管理、工具管理、配置、数据库、Web API 等十多个领域。AstrBot 框架本身也意识到了这一点，但没在 Api 模块中拆成子模块，原因是：
+
+1. **保持单一入口**：插件开发者只需要认识 `context` 一个对象，不用记住多个子模块的路径
+2. **内聚性**：所有方法都服务于"插件与框架沟通"这一职责
+3. **演进成本**：如果拆成 `context.llm`、`context.config`、`context.db` 等子模块，会破坏现有的插件代码兼容性
+
+所以框架选择把复杂度收敛在一个类里，通过文档整理来帮助开发者理解。你整理的文档刚好弥补了这一点——把 Context 的方法按功能分类整理后，就不会显得杂乱了。
 
 ---
 

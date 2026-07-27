@@ -486,3 +486,101 @@ Python 执行：filter.on_llm_request(你的函数)
 简单说：**带括号是先调用外层函数拿到真正的装饰器，再用装饰器包你的函数；不带括号会直接把你的函数传给外层函数，而外层函数不接收位置参数，就报错了。**
 
 这是 Python 装饰器的标准设计模式——需要配置参数的装饰器都必须加括号调用。
+
+# 关于插件配置项
+
+`_conf_schema.json` 只是**配置结构的模板**，实际值不存在这里。
+
+配置体系分两层：
+
+| 文件 | 作用 |
+|------|------|
+| `_conf_schema.json`（插件目录内） | 定义配置项的**结构**：字段名、类型、描述、默认值 |
+| `data/config/plugins/{插件名}.json`（AstrBot 数据目录内） | 存储配置项的**实际值** |
+
+流程是：
+
+1. **插件加载时**：框架读取 `_conf_schema.json`，用它作为 schema 创建 `AstrBotConfig` 实例
+2. **WebUI 修改时**：用户在 WebUI 改的是实际值，写入 `data/config/plugins/{插件名}.json`
+3. **插件读取时**：通过 `context.get_config()` 或 `self.config` 拿到的是已经合并了默认值和用户设置的配置对象
+
+所以修改 `_conf_schema.json` 后如果没生效，需要**重新加载插件**（或重启 AstrBot），因为框架只在插件加载时读取 schema。如果只是想修改配置的**值**，应该通过 WebUI 或直接编辑 `data/config/plugins/{插件名}.json`。
+
+# 哪些东西会被丢给 event 或 context 以及这二者的区别
+
+**event（AstrMessageEvent）除了 message_obj 和 platform_meta，还有：**
+
+| 属性 | 来源 | 说明 |
+|------|------|------|
+| `message_str` | 消息内容 | 纯文本消息内容 |
+| `session: MessageSession` | 框架构造 | 会话标识（平台ID + 消息类型 + session_id） |
+| `role: str` | 框架设置 | 用户角色（"member" 或 "admin"） |
+| `is_wake: bool` | Pipeline 设置 | 是否通过唤醒阶段 |
+| `is_at_or_wake_command: bool` | Pipeline 设置 | 是否是 @ 或唤醒词触发 |
+| `_extras: dict` | 插件/框架写入 | 额外信息容器 |
+| `created_at: float` | 构造时生成 | 事件创建时间戳 |
+| `trace: TraceSpan` | 构造时生成 | 追踪对象（用于调试/监控） |
+| `plugins_name: list[str]` | 框架设置 | 该事件启用的插件列表 |
+
+---
+
+**context（Context）接收的内容更多，是一个"大杂烩"：**
+
+| 属性 | 说明 |
+|------|------|
+| `event_queue` | 事件队列（Platform 提交事件的地方） |
+| `config: AstrBotConfig` | AstrBot 全局配置 |
+| `db: BaseDatabase` | 数据库实例 |
+| `provider_manager` | 模型提供商管理器 |
+| `platform_manager` | 平台适配器管理器 |
+| `conversation_manager` | 会话管理器 |
+| `message_history_manager` | 平台消息历史管理器 |
+| `persona_manager` | 人格角色管理器 |
+| `astrbot_config_mgr` | 配置管理器 |
+| `knowledge_base_manager` | 知识库管理器 |
+| `cron_manager` | 定时任务管理器 |
+| `subagent_orchestrator` | 子智能体编排器 |
+
+---
+
+### 更详细的表格
+
+**event（AstrMessageEvent）：**
+
+| 属性 | 来源 | 说明 |
+|------|------|------|
+| `message_str` | 平台适配器从原始消息中提取的纯文本 | `Platform.create_event()` 时从 `AstrBotMessage.message_str` 传入 |
+| `message_obj` | 平台适配器构造的统一消息对象 | 平台适配器收到原始消息后转换为 `AstrBotMessage`，再包装进 event |
+| `platform_meta` | 平台适配器的 `meta()` 方法返回 | 每个平台适配器（aiocqhttp/discord 等）各自返回自己的元数据 |
+| `session` | 框架在 event 构造时创建 | 用 `platform_meta.id` + `message_type` + `session_id` 组装 |
+| `role` | Pipeline 权限检查阶段设置 | 框架判断用户是否为管理员后赋值 |
+| `is_wake` | Pipeline 唤醒阶段设置 | 通过 WakingStage 判断是否唤醒机器人 |
+| `is_at_or_wake_command` | Pipeline 预处理阶段设置 | 检测是否 @机器人 或包含唤醒词 |
+| `_extras` | 插件或框架在运行时写入 | 临时存储额外信息的容器 |
+| `created_at` | event 构造时自动生成 | `time()` 时间戳 |
+| `trace` | event 构造时自动创建 | TraceSpan 追踪对象，用于监控 |
+| `plugins_name` | 框架在事件分发前设置 | 根据配置筛选出该事件要启用的插件列表 |
+
+**context（Context）：**
+
+| 属性 | 来源 | 说明 |
+|------|------|------|
+| `_event_queue` | 框架核心初始化时创建 | Platform 通过它提交事件，EventBus 从它消费事件 |
+| `_config` | AstrBotConfigManager 加载 | 全局配置（astrbot_config.yml 解析后） |
+| `_db` | 数据库管理器初始化 | SQLite/MySQL 数据库实例 |
+| `provider_manager` | ProviderManager 实例 | 管理所有 LLM/Embedding/Rerank Provider |
+| `platform_manager` | PlatformManager 实例 | 管理所有已加载的平台适配器 |
+| `conversation_manager` | ConversationManager 实例 | 管理对话历史 |
+| `message_history_manager` | PlatformMessageHistoryManager 实例 | 管理各平台消息记录 |
+| `persona_manager` | PersonaManager 实例 | 管理人格设定 |
+| `astrbot_config_mgr` | AstrBotConfigManager 实例 | 配置文件的读写管理 |
+| `knowledge_base_manager` | KnowledgeBaseManager 实例 | 管理知识库（RAG） |
+| `cron_manager` | CronJobManager 实例 | 管理定时任务 |
+| `subagent_orchestrator` | SubAgentOrchestrator 实例 | 管理子智能体编排 |
+
+### **简单理解：**
+
+- **event** = 每条消息的上下文（消息内容 + 发送者 + 平台信息 + 会话 + 运行时状态）
+- **context** = 插件与整个框架交互的桥梁（配置 + 数据库 + LLM + 平台 + 各种管理器）
+
+`event` 是**请求级别**的（每条消息一个），`context` 是**应用级别**的（整个插件生命周期共享一个）。
