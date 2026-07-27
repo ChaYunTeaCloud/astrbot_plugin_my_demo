@@ -322,3 +322,293 @@ yield event.plain_result("hello")
 | `Json` | JSON 消息 |
 
 使用时从 `from astrbot.api.message_components import Plain, Image, At` 导入。
+
+# 从哪里可以导入消息组件？
+
+我要怎么知道 event 的哪些方法是只有特定平台能用的呢？
+
+好问题！这涉及到 AstrBot 的事件继承体系。让我分析一下：
+
+## 一、事件类的继承层次
+
+```
+AstrMessageEvent（基类，通用方法）
+    ├── AiocqhttpMessageEvent（QQ/OneBot v11 特有）
+    ├── DiscordPlatformEvent（Discord 特有）
+    ├── TelegramPlatformEvent（Telegram 特有）
+    ├── ...（其他平台）
+```
+
+**文件**：astrbot/core/platform/astr_message_event.py
+
+## 二、通用方法（所有平台都有）
+
+这些方法在 `AstrMessageEvent` 基类中定义：
+
+| 方法 | 说明 |
+|------|------|
+| `get_message_str()` | 获取纯文本消息 |
+| `get_messages()` | 获取消息组件列表 |
+| `get_sender()` | 获取发送者信息 |
+| `get_group()` | 获取群信息 |
+| `get_platform_name()` | 获取平台名称 |
+| `make_result()` | 创建消息结果 |
+| `send(result)` | 发送消息 |
+| `stop_event()` | 停止事件传播 |
+
+## 三、平台特定方法
+
+这些方法在各平台的事件子类中定义：
+
+### QQ (aiocqhttp)
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py
+
+```python
+class AiocqhttpMessageEvent(AstrMessageEvent):
+    # QQ 特有方法
+    def get_reply_id(self) -> int | None:
+        """获取回复消息 ID"""
+    
+    def is_group_admin(self) -> bool:
+        """是否是群管理员"""
+    
+    def is_group_owner(self) -> bool:
+        """是否是群主"""
+    
+    # 还有更多平台特定属性
+    _raw_event: dict  # 原始 OneBot 事件数据
+```
+
+### Discord
+
+**文件**：astrbot/core/platform/sources/discord/discord_platform_event.py
+
+```python
+class DiscordPlatformEvent(AstrMessageEvent):
+    # Discord 特有方法/属性
+    _message: discord.Message  # 原始 discord.py 消息对象
+```
+
+### Telegram
+
+**文件**：astrbot/core/platform/sources/telegram/tg_event.py
+
+```python
+class TelegramPlatformEvent(AstrMessageEvent):
+    # Telegram 特有方法/属性
+    _update: Update  # 原始 python-telegram-bot 更新对象
+```
+
+## 四、如何判断方法是否通用
+
+### 方法一：看类型提示
+
+```python
+from astrbot.api.event import AstrMessageEvent
+
+async def handler(self, event: AstrMessageEvent):
+    # event 的类型是 AstrMessageEvent，只能调用基类方法
+    # 如果需要平台特定方法，需要类型断言
+    if isinstance(event, AiocqhttpMessageEvent):
+        reply_id = event.get_reply_id()  # QQ 特有
+```
+
+### 方法二：检查平台名称
+
+```python
+@filter.command("test")
+async def test(self, event):
+    platform = event.get_platform_name()
+    
+    if platform == "aiocqhttp":
+        # QQ 平台，可以使用 QQ 特有方法
+        # 但需要小心，因为 event 的类型还是 AstrMessageEvent
+        # 需要通过 isinstance 判断或直接访问属性
+        if hasattr(event, 'is_group_admin'):
+            is_admin = event.is_group_admin()
+    
+    elif platform == "discord":
+        # Discord 平台
+        pass
+```
+
+### 方法三：使用 `isinstance` 判断
+
+```python
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
+@filter.command("admin")
+async def check_admin(self, event):
+    if isinstance(event, AiocqhttpMessageEvent):
+        # 安全地调用 QQ 特有方法
+        is_admin = event.is_group_admin()
+        yield event.make_result().message(f"是否管理员: {is_admin}")
+    else:
+        yield event.make_result().message("此命令仅支持 QQ 平台")
+```
+
+## 五、实际案例：跨平台兼容
+
+```python
+@filter.command("info")
+async def get_info(self, event):
+    platform = event.get_platform_name()
+    
+    info = []
+    
+    # 通用信息（所有平台）
+    sender = event.get_sender()
+    info.append(f"发送者: {sender.nickname}")
+    
+    group = event.get_group()
+    if group:
+        info.append(f"群名称: {group.name}")
+    
+    # 平台特定信息
+    if platform == "aiocqhttp":
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+        
+        if isinstance(event, AiocqhttpMessageEvent):
+            info.append(f"是否管理员: {event.is_group_admin()}")
+            info.append(f"是否群主: {event.is_group_owner()}")
+    
+    elif platform == "discord":
+        from astrbot.core.platform.sources.discord.discord_platform_event import DiscordPlatformEvent
+        
+        if isinstance(event, DiscordPlatformEvent):
+            # Discord 特有属性
+            raw_message = event._message
+            info.append(f"消息 ID: {raw_message.id}")
+    
+    yield event.make_result().message("\n".join(info))
+```
+
+## 六、总结
+
+| 判断方式 | 适用场景 |
+|---------|---------|
+| `event.get_platform_name()` | 运行时判断平台 |
+| `isinstance(event, PlatformEventClass)` | 类型安全地调用平台特定方法 |
+| `hasattr(event, 'method_name')` | 运行时检查方法是否存在 |
+
+**核心原则**：
+- 如果方法在 `AstrMessageEvent` 基类中定义 → **所有平台通用**
+- 如果方法只在某个平台的事件子类中定义 → **平台特定**
+
+你可以通过查看 `AstrMessageEvent` 的源码来确认哪些方法是通用的，然后查看各个平台的事件类来了解平台特定方法。
+
+# 注意：AstrBot的管线在接收到消息时会根据平台判断，然后会将 AstrBotMessage 包装为特定平台实现的继承类
+   
+是的，你的理解完全正确！让我用代码来验证：
+
+## 流程分析
+
+### 1. 基类 `Platform.create_event`
+
+**文件**：astrbot/core/platform/platform.py#L150
+
+```python
+def create_event(self, message: AstrBotMessage) -> AstrMessageEvent:
+    return AstrMessageEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+    )
+```
+
+### 2. 各平台适配器重写 `create_event`
+
+**QQ (aiocqhttp)**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py#L492
+
+```python
+def create_event(self, message: AstrBotMessage) -> AiocqhttpMessageEvent:
+    return AiocqhttpMessageEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        bot=self.bot,  # QQ 特有：CQHttp 客户端对象
+    )
+```
+
+**Discord**：astrbot/core/platform/sources/discord/discord_platform_adapter.py#L280
+
+```python
+def create_event(self, message: AstrBotMessage, ...) -> DiscordPlatformEvent:
+    return DiscordPlatformEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        _message=discord_message,  # Discord 特有：原始 Message 对象
+    )
+```
+
+**Telegram**：astrbot/core/platform/sources/telegram/tg_adapter.py#L739
+
+```python
+def create_event(self, message: AstrBotMessage) -> TelegramPlatformEvent:
+    return TelegramPlatformEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        _update=update,  # Telegram 特有：原始 Update 对象
+    )
+```
+
+---
+
+## 完整流程
+
+```
+用户发送消息
+    ↓
+平台适配器收到消息（aiocqhttp / discord / telegram 等）
+    ↓
+适配器将原始消息转换为 AstrBotMessage（统一格式）
+    ↓
+调用 self.create_event(message)  ← 关键步骤！
+    ↓
+根据平台类型创建对应的事件类：
+    - aiocqhttp → AiocqhttpMessageEvent(AstrMessageEvent)
+    - discord → DiscordPlatformEvent(AstrMessageEvent)
+    - telegram → TelegramPlatformEvent(AstrMessageEvent)
+    - ...
+    ↓
+调用 self.commit_event(event) 提交到事件队列
+    ↓
+Pipeline 处理事件
+    ↓
+路由到插件 Handler
+    ↓
+插件拿到的 event 实际上是特定平台的子类实例
+```
+
+---
+
+## 结论
+
+**是的，AstrBot 的管线在接收到消息时会根据平台判断，将 `AstrBotMessage` 包装为特定平台实现的继承类。**
+
+每个平台适配器都会**重写** `create_event` 方法，返回自己平台特定的事件类。这些子类：
+- 继承自 `AstrMessageEvent`（基类）
+- 包含平台特定的属性和方法
+- 保留了基类的所有通用方法
+
+所以在插件中：
+```python
+@filter.command("test")
+async def test(self, event):
+    # event 的类型是 AstrMessageEvent（类型提示）
+    # 但实际运行时它是 AiocqhttpMessageEvent / DiscordPlatformEvent 等子类
+    
+    # 通用方法（所有平台都能用）
+    await event.send(event.make_result().message("Hello"))
+    
+    # 平台特定方法（需要 isinstance 判断）
+    if isinstance(event, AiocqhttpMessageEvent):
+        is_admin = event.is_group_admin()  # QQ 特有
+```

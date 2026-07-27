@@ -11,7 +11,10 @@
 | `api.event` | ⭐⭐⭐⭐⭐ | 所有插件必用，注册命令和事件钩子 |
 | `api.star` | ⭐⭐⭐⭐⭐ | 所有插件必用，插件基类和工具方法 |
 | `api.message_components` | ⭐⭐⭐⭐ | 构造丰富的消息内容 |
+| `api.util` | ⭐⭐⭐ | 多轮对话、会话控制 |
+| `api.web` | ⭐⭐ | 插件 Web API 开发 |
 | `api.platform` | ⭐⭐ | 访问消息对象、开发自定义平台适配器 |
+| `api.all` | ⭐⭐ | 便捷导入（不推荐） |
 | `api.provider` | ⭐ | 开发自定义 AI 适配器、高级 AI 调用 |
 
 ---
@@ -189,7 +192,131 @@
 
 ---
 
-### 2.5 api.provider（AI 服务模块）
+### 2.5 api.util（会话控制模块）
+
+**使用频率**：⭐⭐⭐（需要多轮对话时使用）
+
+**典型场景**：
+
+1. **实现多轮对话**
+   ```python
+   from astrbot.api.util import session_waiter, SessionController
+
+   @filter.command("survey")
+   @session_waiter(timeout=60)
+   async def survey(self, controller: SessionController, event):
+       # 第一次触发：提问
+       await event.send(event.make_result().message("请问您的名字？"))
+       
+       # 用户回复后继续...
+       name = event.message_str
+       
+       # 继续保持会话
+       controller.keep(30, reset_timeout=True)
+       
+       await event.send(event.make_result().message(f"您好{name}，请问您的年龄？"))
+   ```
+
+2. **记录对话历史**
+   ```python
+   @session_waiter(timeout=30, record_history_chains=True)
+   async def chat(self, controller: SessionController, event):
+       history = controller.get_history_chains()
+       # 处理历史消息
+   ```
+
+3. **手动控制会话超时**
+   ```python
+   @session_waiter(timeout=30)
+   async def multi_step(self, controller: SessionController, event):
+       controller.keep(60)  # 重置超时为60秒
+       controller.stop()    # 立即结束会话
+   ```
+
+**常用导出**：`session_waiter`、`SessionController`、`SessionWaiter`
+
+**详细文档**：见 [AstrBot-Util 模块接口整理.md](./AstrBot-Util%20模块接口整理.md)
+
+---
+
+### 2.6 api.web（Web API 模块）
+
+**使用频率**：⭐⭐（需要提供 HTTP 接口时使用）
+
+**典型场景**：
+
+1. **提供 REST API**
+   ```python
+   from astrbot.api.web import request, json_response, error_response
+
+   @filter.web_api("/api/v1/users", methods=["GET"])
+   async def get_users(self):
+       page = request.query.get("page", type=int, default=1)
+       return json_response({"page": page, "users": []})
+   ```
+
+2. **处理 POST 请求**
+   ```python
+   @filter.web_api("/api/v1/users", methods=["POST"])
+   async def create_user(self):
+       data = await request.json()
+       if not data.get("name"):
+           return error_response("缺少 name 参数", status_code=400)
+       return json_response({"id": 1}, status_code=201)
+   ```
+
+3. **文件上传**
+   ```python
+   @filter.web_api("/api/v1/upload", methods=["POST"])
+   async def upload(self):
+       files = await request.files()
+       file = files.get("file")
+       if file:
+           await file.save("/path/to/save/" + file.filename)
+       return json_response({"status": "success"})
+   ```
+
+4. **文件下载**
+   ```python
+   from astrbot.api.web import file_response
+
+   @filter.web_api("/api/v1/download/{file_id}", methods=["GET"])
+   async def download(self, file_id):
+       return file_response(f"/path/to/files/{file_id}.pdf")
+   ```
+
+**常用导出**：`request`、`json_response`、`error_response`、`file_response`、`stream_response`
+
+**详细文档**：见 [AstrBot-Web 模块接口整理.md](./AstrBot-Web%20模块接口整理.md)
+
+---
+
+### 2.7 api.all（聚合导出模块）
+
+**使用频率**：⭐⭐（便捷导入，不推荐）
+
+**典型场景**：
+
+```python
+# 一次性导入所有 API
+from astrbot.api.all import *
+
+class MyPlugin(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+
+    @command("hello")
+    async def hello(self, event: AstrMessageEvent):
+        logger.info("hello command")
+```
+
+**注意**：不推荐使用，会污染命名空间。建议使用精确导入。
+
+**详细文档**：见 [AstrBot-API-all 模块整理.md](./AstrBot-API-all%20模块整理.md)
+
+---
+
+### 2.8 api.provider（AI 服务模块）
 
 **使用频率**：⭐（极少数高级场景使用）
 
@@ -386,13 +513,41 @@ class HookPlugin(Star):
   5. 发送转发消息（`Nodes`）
 - 举例：`from astrbot.api.message_components import Plain, Image, At, Reply`
 
-### 5.4 api.platform（平台模块）
+### 5.4 api.util（会话控制模块）
+
+- 日常插件开发：**偶尔用到**。需要实现多轮对话时使用
+- 使用场景：
+  1. 实现多轮交互式对话（`@session_waiter`）
+  2. 保持会话等待用户输入（`controller.keep()`）
+  3. 记录对话历史（`record_history_chains=True`）
+  4. 手动结束会话（`controller.stop()`）
+- 举例：`from astrbot.api.util import session_waiter, SessionController`
+
+### 5.5 api.web（Web API 模块）
+
+- 日常插件开发：**偶尔用到**。需要提供 HTTP 接口时使用
+- 使用场景：
+  1. 提供 REST API（`@filter.web_api`）
+  2. 处理 JSON 请求（`request.json()`）
+  3. 文件上传（`request.files()`）
+  4. 文件下载（`file_response()`）
+- 举例：`from astrbot.api.web import request, json_response`
+
+### 5.6 api.all（聚合导出模块）
+
+- 日常插件开发：**不推荐使用**。一次性导入所有 API 会污染命名空间
+- 使用场景：
+  1. 快速原型开发（一次性导入所有 API）
+  2. 兼容旧代码
+- 举例：`from astrbot.api.all import *`
+
+### 5.7 api.platform（平台模块）
 
 - 日常插件开发：**几乎不用**。消息接收（`event`）和发送（`event.send()`）已经被框架封装好了
 - 使用场景：开发**自定义平台适配器**（如接入新的 IM 平台飞书、钉钉等）
 - 举例：`from astrbot.api.platform import Platform, register_platform_adapter`
 
-### 5.5 api.provider（AI 服务模块）
+### 5.8 api.provider（AI 服务模块）
 
 - 日常插件开发：**几乎不用**。LLM 调用已经被 Pipeline 和 Agent 封装，你只需注册 `@filter.command()` 或 `@filter.on_llm_request()`
 - 使用场景：
@@ -401,13 +556,13 @@ class HookPlugin(Star):
   3. 在插件中精细控制 LLM 调用（绕过 Pipeline 直接调用 `text_chat()`）
 - 举例：`from astrbot.api.provider import Provider, ProviderType`
 
-### 5.6 总结
+### 5.9 总结
 
 普通插件开发真正会用到的模块只有 `api.event` 和 `api.star`，以及经常用到的 `api.message_components`。`api.platform` 和 `api.provider` 更多是为框架扩展者准备的，而非普通插件开发者。
 
 ---
 
-## 六、文档索引
+## 七、文档索引
 
 | 文档 | 内容 |
 |------|------|
@@ -415,5 +570,9 @@ class HookPlugin(Star):
 | [AstrBot-Event 模块接口整理.md](./AstrBot-Event%20模块接口整理.md) | Event、MessageChain、MessageEventResult |
 | [AstrBot-Event-filter 装饰器整理.md](./AstrBot-Event-filter%20装饰器整理.md) | 所有 filter 装饰器 |
 | [AstrBot-Star 模块接口整理.md](./AstrBot-Star%20模块接口整理.md) | Star、StarTools |
-| [AstrBot-Platform 模块接口整理.md](./AstrBot-Platform%20模块接口整理.md) | Platform、消息组件 |
+| [AstrBot-Platform 模块接口整理.md](./AstrBot-Platform%20模块接口整理.md) | Platform、消息载体 |
 | [AstrBot-Provider 模块接口整理.md](./AstrBot-Provider%20模块接口整理.md) | Provider、ProviderManager |
+| [AstrBot-MessageComponents 模块接口整理.md](./AstrBot-MessageComponents%20模块接口整理.md) | 所有消息组件（Plain、Image、At 等） |
+| [AstrBot-Util 模块接口整理.md](./AstrBot-Util%20模块接口整理.md) | 会话控制（session_waiter、SessionController） |
+| [AstrBot-Web 模块接口整理.md](./AstrBot-Web%20模块接口整理.md) | Web API 开发（request、json_response 等） |
+| [AstrBot-API-all 模块整理.md](./AstrBot-API-all%20模块整理.md) | 聚合导出模块（from astrbot.api.all import *） |

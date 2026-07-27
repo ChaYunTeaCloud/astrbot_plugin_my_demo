@@ -616,3 +616,74 @@ Platform 一般只有要用到针对某个平台的插件开发时才用到吧�
 | `api.provider` | ⭐ | 高级用法，极少数场景 |
 
 所以之前整理的文档(api 模块整理目录中的内容)更像是**参考手册**，当你需要深入某个领域时可以查阅。日常开发中，大部分时候你只需要关注 `api.event` 和 `api.star` 这两个模块就够了。
+
+# 有不属于 api 模块但插件开发可能会用到的内容吗？
+
+          
+有，以下是不属于 `api` 模块但插件开发可能会用到的内容：
+
+**一、直接从 `astrbot` 导入的**
+
+| 模块 | 说明 | 用途 |
+|------|------|------|
+| `astrbot.logger` | AstrBot 日志记录器 | 插件中记录日志 |
+| `astrbot.__version__` | 版本号 | 检查 AstrBot 版本 |
+
+**二、从 `astrbot.core` 导入的**
+
+| 模块 | 说明 | 用途 |
+|------|------|------|
+| `astrbot.core.html_renderer` | HTML 渲染工具 | 将 HTML 转换为图片 |
+| `astrbot.core.sp` | 未知（需要进一步检查） | 可能是某种工具函数 |
+| `astrbot.core.agent.tool.FunctionTool` | LLM 函数工具定义 | 创建 LLM 可调用的工具 |
+| `astrbot.core.agent.tool.ToolSet` | 工具集合 | 管理多个工具 |
+| `astrbot.core.agent.tool_executor.BaseFunctionToolExecutor` | 工具执行器基类 | 自定义工具执行逻辑 |
+| `astrbot.core.config.astrbot_config.AstrBotConfig` | 配置类 | 访问全局配置 |
+
+**三、从 `astrbot.api.util` 导入的**
+
+| 模块 | 说明 | 用途 |
+|------|------|------|
+| `SessionController` | 会话控制器 | 管理会话状态 |
+| `SessionWaiter` | 会话等待器 | 等待用户输入 |
+| `session_waiter` | 装饰器 | 简化会话等待逻辑 |
+
+**四、从 `astrbot.api.web` 导入的**
+
+| 模块 | 说明 | 用途 |
+|------|------|------|
+| `request` | 请求代理对象 | 获取当前 Web 请求信息 |
+| `json_response` | JSON 响应构造函数 | 返回 JSON 响应 |
+| `error_response` | 错误响应构造函数 | 返回标准错误响应 |
+| `file_response` | 文件响应构造函数 | 返回文件下载响应 |
+| `stream_response` | 流式响应构造函数 | 返回流式响应 |
+
+**五、从 `astrbot.core.star.register` 导入的**
+
+| 模块 | 说明 | 用途 |
+|------|------|------|
+| `register_agent` | Agent 注册装饰器 | 注册子智能体 |
+
+**使用示例**：
+
+```python
+import astrbot.logger as logger
+
+from astrbot.core.html_renderer import render_html_to_image
+from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.api.util import session_waiter
+from astrbot.api.web import request, json_response
+
+logger.info("插件启动")
+
+@session_waiter
+async def wait_for_input(self, event):
+    # 等待用户输入
+    pass
+
+async def web_handler():
+    data = await request.json()
+    return json_response({"status": "success", "data": data})
+```
+
+这些模块虽然不属于 `api` 的子模块，但都是插件开发中可能会用到的实用工具。
