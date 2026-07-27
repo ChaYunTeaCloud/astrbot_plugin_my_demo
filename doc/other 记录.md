@@ -584,3 +584,35 @@ Python 执行：filter.on_llm_request(你的函数)
 - **context** = 插件与整个框架交互的桥梁（配置 + 数据库 + LLM + 平台 + 各种管理器）
 
 `event` 是**请求级别**的（每条消息一个），`context` 是**应用级别**的（整个插件生命周期共享一个）。
+
+# api 中各模块基本介绍
+
+## Q:
+Platform 一般只有要用到针对某个平台的插件开发时才用到吧？Provider使用场景就更少了，对吗？
+
+## A:
+是的，你的理解完全正确。这两个模块在**普通插件开发**中确实很少直接用到。
+
+**Platform 模块**：
+- 日常插件开发：**几乎不用**。消息接收（`event`）和发送（`event.send()`）已经被框架封装好了
+- 使用场景：开发**自定义平台适配器**（如接入新的 IM 平台飞书、钉钉等）
+- 举例：`from astrbot.api.platform import Platform, register_platform_adapter`
+
+**Provider 模块**：
+- 日常插件开发：**几乎不用**。LLM 调用已经被 Pipeline 和 Agent 封装，你只需注册 `@filter.command()` 或 `@filter.on_llm_request()`
+- 使用场景：
+  1. 开发**自定义 Provider 适配器**（接入新的 AI 服务商）
+  2. 需要直接调用特定 AI 能力（如 `EmbeddingProvider` 做向量化、`RerankProvider` 做重排序、`STTProvider` 做语音转文本）
+  3. 在插件中精细控制 LLM 调用（绕过 Pipeline 直接调用 `text_chat()`）
+
+**常见插件开发真正会用到的模块**：
+
+| 模块 | 使用频率 | 用途 |
+|------|---------|------|
+| `api.event`（含 filter） | ⭐⭐⭐⭐⭐ | 注册命令、事件钩子 |
+| `api.star`（含 Star、StarTools） | ⭐⭐⭐⭐⭐ | 插件基类、工具方法 |
+| `api.message_components` | ⭐⭐⭐⭐ | 构造消息组件（图片、@人等） |
+| `api.platform` | ⭐⭐ | 访问消息对象、发送消息 |
+| `api.provider` | ⭐ | 高级用法，极少数场景 |
+
+所以之前整理的文档(api 模块整理目录中的内容)更像是**参考手册**，当你需要深入某个领域时可以查阅。日常开发中，大部分时候你只需要关注 `api.event` 和 `api.star` 这两个模块就够了。
