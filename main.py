@@ -28,3 +28,14 @@ class SubAgentRouter(Star):
     @filter.on_llm_request()
     async def _on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         return None
+
+    @filter.llm_tool(name="get_weather")
+    async def get_weather(self, event: AstrMessageEvent, city: str):
+        """获取指定城市的天气信息
+        
+        Args:
+            city(str): 城市名称
+        """
+        # 调用天气 API
+        weather = await fetch_weather(city)
+        return f"{city}今天{weather}"

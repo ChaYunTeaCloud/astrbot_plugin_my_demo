@@ -81,7 +81,7 @@ for handler in handlers:
 ```
 
 ### 2. call_handler() — 命令处理器调用（适用于 @filter.command 等）
-位置： context_utils.py #L12-76
+位置：astrbot/core/pipeline/context_utils.py #L12-76
 
 流程：
 1. 调用 handler(event, *args, **kwargs) 得到返回值
@@ -109,7 +109,7 @@ elif inspect.iscoroutine(ready_to_call):
     yield
 ```
 
-### ## 两者的区别
+### 两者的区别
 
 | 维度 | `call_event_hook` | `call_handler` |
 |------|------------------|---------------|

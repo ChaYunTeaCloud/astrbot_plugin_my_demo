@@ -348,25 +348,6 @@ class WeatherTool(FunctionTool[AstrAgentContext]):
 
 使用 `@llm_tool` 装饰器注册的工具，**不需要直接操作 `ContextWrapper`**。
 
-从源码 strbot\core\provider\func_tool_manager.py 中查看，框架会自动从 `ContextWrapper` 中提取 `event`，并直接传给 `handler`。
-```python
-# @filter.llm_tool decorated tools have a handler attribute, which is the actual callable.
-if self._wrapped.handler is not None:
-    event = context.context.event  # 框架从 ContextWrapper 中提取 event
-    result = self._wrapped.handler(event, **kwargs)  # 只传入 event 和业务参数
-```
-因此可得出结论：
-@llm_tool 方式不需要 ContextWrapper ，因为：
-1. event 已通过方法参数传入
-   - 框架自动从 ContextWrapper[AstrAgentContext] 中提取 event
-   - 直接传给 handler 的第一个参数
-2. Context 在 Star 初始化时就有了
-   - 通过 self.context 访问（Star 基类的属性）
-   - 不需要从 ContextWrapper 中获取
-3. ContextWrapper 是框架内部使用的
-   - 用于维护对话历史、超时控制等
-   - 插件开发者无需直接操作
-
 **框架自动处理的逻辑**
 
 ```python
@@ -406,53 +387,15 @@ if self._wrapped.handler is not None:
 - 直接通过参数获取 `event`
 - 通过 `self.context` 获取 `Context`
 
-**什么时候必须用 FunctionTool？（仅限以下情况）**
+**什么时候必须用 FunctionTool？**
 
 只有当你需要以下功能时，才使用继承 `FunctionTool` 的方式：
-- **需要 `required` 字段限定必填参数**（唯一的必要场景）
-- 访问对话历史（`context.messages`）
-- 控制工具调用超时
-- 更灵活的上下文传递
+- **需要 `required` 字段限定必填参数**
+- **需要复杂参数结构**（嵌套对象、数组、枚举等）
+- 需要访问对话历史（`context.messages`）
+- 需要控制工具调用超时
 
 否则，`@llm_tool` 已经足够用了，而且更简洁。
-
-`ContextWrapper` 的目的**不仅是拿到 `context` 和 `event`**，它还提供了其他重要功能。
-
-##### ContextWrapper 的三个字段
-
-```python
-@dataclass
-class ContextWrapper(Generic[TContext]):
-    context: TContext              # 被包装的上下文（AstrAgentContext）
-    messages: list[Message]        # LLM 对话历史
-    tool_call_timeout: int = 120   # 工具调用超时时间
-```
-
-| 字段 | 用途 | 说明 |
-|------|------|------|
-| `context` | `AstrAgentContext` | 通过它可以访问 `Context` 和 `event` |
-| `messages` | LLM 对话历史 | 由 Agent Runner 自动维护，用于上下文对话 |
-| `tool_call_timeout` | 超时控制 | 控制工具调用的最大等待时间 |
-
-##### 对插件开发者的实际意义
-
-**在两种使用方式中，你是否需要 `messages` 和 `tool_call_timeout`？**
-
-| 使用方式 | 能获取 `messages` | 能获取 `tool_call_timeout` |
-|---------|-------------------|---------------------------|
-| `@llm_tool` 装饰器 | ❌ 不需要 | ❌ 不需要 |
-| 继承 `FunctionTool` | ✅ `context.messages` | ✅ `context.tool_call_timeout` |
-
-##### 什么时候需要这些额外功能？
-
-- **访问对话历史**：需要根据之前的对话内容决定工具行为时
-- **控制超时**：工具调用耗时较长，需要自定义超时时间时
-
-**但实际上，大多数插件工具不需要这些功能**。对于简单的工具（如查询天气、搜索信息），`@llm_tool` 方式已经足够了。
-
-##### 总结
-
-**对插件开发者来说，`ContextWrapper` 的主要用途确实是间接获取 `context` 和 `event`**。`messages` 和 `tool_call_timeout` 是框架额外提供的能力，大多数场景下用不到。
 
 #### ContextWrapper、AstrAgentContext、Context 的生命周期
 
@@ -567,13 +510,6 @@ async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> Too
     ...
 ```
 
-#### 泛型参数 FunctionTool[AstrAgentContext] 是否必要？
-
-- **不是绝对必要，但强烈推荐使用**
-- 泛型参数会影响 `call` 方法中 `context` 参数的类型提示
-- 如果不指定，IDE 无法正确推断 `context.context` 的类型
-- 目前 AstrBot 只支持 `AstrAgentContext` 作为泛型参数
-
 ### 方式三：手动创建 FunctionTool
 
 如果你有特殊需求，可以手动创建 `FunctionTool` 并注册。
@@ -604,9 +540,12 @@ class MyPlugin(Star):
         self.context.add_llm_tools(weather_tool)
     
     async def _get_weather_handler(self, event: AstrMessageEvent, city: str, date: str = "") -> str:
+        """实际的 handler，第一个参数是 event"""
         weather = await fetch_weather(city, date)
         return f"{city}今天{weather}"
 ```
+
+**注意**：通过 `handler` 参数传入的函数，第一个参数必须是 `event`，这与 `@llm_tool` 装饰器的 handler 签名相同。
 
 ## 六、handler 的注册与调用
 
@@ -762,12 +701,12 @@ class GetUserInfoTool(FunctionTool[AstrAgentContext]):
 
 ### 相关装饰器
 
-在 `api.event.filter` 中还有：
+在 `api.event.filter` 中还有与 Tool 相关的装饰器：
 
 | 装饰器 | 说明 |
 |--------|------|
-| `@llm_tool(name="xxx")` | 注册 LLM 工具 |
-| `@on_using_llm_tool()` | 监听工具使用事件 |
+| `@llm_tool(name="xxx")` | 注册 LLM 工具（用于 `@llm_tool` 方式） |
+| `@on_using_llm_tool()` | 监听工具被使用的事件 |
 | `@on_llm_tool_respond()` | 监听工具响应事件 |
 
 ## 九、动态控制工具
@@ -777,10 +716,10 @@ class GetUserInfoTool(FunctionTool[AstrAgentContext]):
 当你需要**动态控制工具**时（比如根据用户权限决定是否提供某个工具）：
 
 ```python
-from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event import AstrMessageEvent, filter
 
 class MyPlugin(Star):
-    @llm_tool(name="admin_action")
+    @filter.llm_tool(name="admin_action")
     async def admin_action(self, event: AstrMessageEvent, action: str) -> str:
         """管理员操作
         
