@@ -617,73 +617,754 @@ Platform 一般只有要用到针对某个平台的插件开发时才用到吧�
 
 所以之前整理的文档(api 模块整理目录中的内容)更像是**参考手册**，当你需要深入某个领域时可以查阅。日常开发中，大部分时候你只需要关注 `api.event` 和 `api.star` 这两个模块就够了。
 
-# 有不属于 api 模块但插件开发可能会用到的内容吗？
+# 平台差异控制
+     
+平台差异控制在 `api.event.filter` 中。
 
-          
-有，以下是不属于 `api` 模块但插件开发可能会用到的内容：
+---
 
-**一、直接从 `astrbot` 导入的**
+## 一、`support_platforms` 的作用
 
-| 模块 | 说明 | 用途 |
-|------|------|------|
-| `astrbot.logger` | AstrBot 日志记录器 | 插件中记录日志 |
-| `astrbot.__version__` | 版本号 | 检查 AstrBot 版本 |
+`support_platforms` 在 `metadata.yaml` 中声明，**只用于 WebUI 展示**，不影响代码执行：
 
-**二、从 `astrbot.core` 导入的**
-
-| 模块 | 说明 | 用途 |
-|------|------|------|
-| `astrbot.core.html_renderer` | HTML 渲染工具 | 将 HTML 转换为图片 |
-| `astrbot.core.sp` | 未知（需要进一步检查） | 可能是某种工具函数 |
-| `astrbot.core.agent.tool.FunctionTool` | LLM 函数工具定义 | 创建 LLM 可调用的工具 |
-| `astrbot.core.agent.tool.ToolSet` | 工具集合 | 管理多个工具 |
-| `astrbot.core.agent.tool_executor.BaseFunctionToolExecutor` | 工具执行器基类 | 自定义工具执行逻辑 |
-| `astrbot.core.config.astrbot_config.AstrBotConfig` | 配置类 | 访问全局配置 |
-
-**三、从 `astrbot.api.util` 导入的**
-
-| 模块 | 说明 | 用途 |
-|------|------|------|
-| `SessionController` | 会话控制器 | 管理会话状态 |
-| `SessionWaiter` | 会话等待器 | 等待用户输入 |
-| `session_waiter` | 装饰器 | 简化会话等待逻辑 |
-
-**四、从 `astrbot.api.web` 导入的**
-
-| 模块 | 说明 | 用途 |
-|------|------|------|
-| `request` | 请求代理对象 | 获取当前 Web 请求信息 |
-| `json_response` | JSON 响应构造函数 | 返回 JSON 响应 |
-| `error_response` | 错误响应构造函数 | 返回标准错误响应 |
-| `file_response` | 文件响应构造函数 | 返回文件下载响应 |
-| `stream_response` | 流式响应构造函数 | 返回流式响应 |
-
-**五、从 `astrbot.core.star.register` 导入的**
-
-| 模块 | 说明 | 用途 |
-|------|------|------|
-| `register_agent` | Agent 注册装饰器 | 注册子智能体 |
-
-**使用示例**：
-
-```python
-import astrbot.logger as logger
-
-from astrbot.core.html_renderer import render_html_to_image
-from astrbot.core.agent.tool import FunctionTool, ToolSet
-from astrbot.api.util import session_waiter
-from astrbot.api.web import request, json_response
-
-logger.info("插件启动")
-
-@session_waiter
-async def wait_for_input(self, event):
-    # 等待用户输入
-    pass
-
-async def web_handler():
-    data = await request.json()
-    return json_response({"status": "success", "data": data})
+```yaml
+# metadata.yaml
+support_platforms:
+  - aiocqhttp
+  - discord
 ```
 
-这些模块虽然不属于 `api` 的子模块，但都是插件开发中可能会用到的实用工具。
+它的作用是在插件管理页面告诉用户"这个插件支持哪些平台"。
+
+---
+
+## 二、真正控制平台差异的 API
+
+在 `api.event.filter` 中有 `platform_adapter_type` 装饰器，用于**过滤特定平台的消息**：
+
+```python
+from astrbot.api.event import filter
+from astrbot.api.event.filter import PlatformAdapterType
+
+# 方式一：使用字符串
+@filter.platform_adapter_type("aiocqhttp")
+@filter.command("qq_only")
+async def qq_command(self, event):
+    yield event.make_result().message("只有QQ用户能看到")
+
+# 方式二：使用枚举
+@filter.platform_adapter_type(PlatformAdapterType.DISCORD | PlatformAdapterType.SLACK)
+@filter.command("chat_only")
+async def chat_command(self, event):
+    yield event.make_result().message("只有Discord/Slack用户能看到")
+
+# 方式三：排除特定平台
+@filter.platform_adapter_type(PlatformAdapterType.ALL ^ PlatformAdapterType.WEBCHAT)
+@filter.command("not_webchat")
+async def not_webchat_command(self, event):
+    yield event.make_result().message("WebChat用户看不到")
+```
+
+此外，在 astrbot\core\platform\sources 目录下的每个平台的事件类中可以看到，部分平台的事件类继承了 `AstrMessageEvent`，并添加了平台特定的方法。有些方法在其它平台的事件类中是不存在或不适配的。如：.astrbot\core\platform\astr_message_event.py 第 503 行定义的 get_group 方法，其有说明只支持 aiocqhttp 平台。
+
+---
+
+## 三、PlatformAdapterType 枚举
+
+**文件**：astrbot/core/star/filter/platform_adapter_type.py#L9
+
+| 平台类型 | 字符串标识 |
+|---------|-----------|
+| `AIOCQHTTP` | `aiocqhttp` |
+| `QQOFFICIAL` | `qq_official` |
+| `QQOFFICIAL_WEBHOOK` | `qq_official_webhook` |
+| `TELEGRAM` | `telegram` |
+| `WECOM` | `wecom` |
+| `WECOM_AI_BOT` | `wecom_ai_bot` |
+| `LARK` | `lark` |
+| `DINGTALK` | `dingtalk` |
+| `DISCORD` | `discord` |
+| `SLACK` | `slack` |
+| `KOOK` | `kook` |
+| `VOCECHAT` | `vocechat` |
+| `WEIXIN_OFFICIAL_ACCOUNT` | `weixin_official_account` |
+| `SATORI` | `satori` |
+| `MISSKEY` | `misskey` |
+| `LINE` | `line` |
+| `MATRIX` | `matrix` |
+| `WEIXIN_OC` | `weixin_oc` |
+| `MATTERMOST` | `mattermost` |
+| `WEBCHAT` | `webchat` |
+| `ALL` | 所有平台 |
+
+---
+
+## 四、获取当前平台信息
+
+在插件代码中，可以通过 `event` 获取当前平台信息：
+
+```python
+@filter.command("info")
+async def get_platform_info(self, event):
+    # 获取平台名称（字符串）
+    platform_name = event.get_platform_name()  # "aiocqhttp", "discord" 等
+    
+    # 获取平台元数据
+    platform_id = event.platform_meta.id
+    platform_desc = event.platform_meta.description
+    
+    yield event.make_result().message(f"当前平台: {platform_name}")
+```
+
+---
+
+## 五、总结
+
+| 用途 | 方式 |
+|------|------|
+| 在 WebUI 展示支持的平台 | `metadata.yaml` 中声明 `support_platforms` |
+| 过滤特定平台的消息 | `@filter.platform_adapter_type()` 装饰器 |
+| 在代码中判断平台 | `event.get_platform_name()` |
+
+所以 `support_platforms` 和 `platform_adapter_type` 是配套使用的：前者声明给用户看，后者实际控制代码行为。
+
+## 实际应用场景
+
+大部分插件不需要平台差异控制。但在某些场景下它是有用的：
+1. 平台特有消息组件（如QQ特有的戳一戳、QQ特有的表情）
+2. 平台特定功能调用）如获取群成员、设置管理员）
+3. 不同平台的消息展示优化（某些平台对消息格式有特殊要求，如 webchat 适合展示富文本，而其它平台只能用纯文本）
+4. 平台特定的限制处理（不通平台有不同的限制，如消息长度、文件大小等）
+5. 平台特定的认证方式（某些功能需要平台特定的认证，如企业微信的审批流程）
+
+大部分插件确实不需要平台差异控制 。但当你的插件：
+
+- 使用了平台特有的消息组件（ Poke 、 Face 、 Share 等）
+- 需要调用平台特定的 API（群管理、审批等）
+- 需要针对不同平台做消息适配
+这时 platform_adapter_type 就有用了。如果你的插件是通用的（只处理文本、图片等通用消息），确实用不到它。
+
+# 事件类的继承层次
+
+Q:我要怎么知道 event 的哪些方法是只有特定平台能用的呢？
+
+A:好问题！这涉及到 AstrBot 的事件继承体系。让我分析一下：
+
+## 一、事件类的继承层次
+
+```
+AstrMessageEvent（基类，通用方法）
+    ├── AiocqhttpMessageEvent（QQ/OneBot v11 特有）
+    ├── DiscordPlatformEvent（Discord 特有）
+    ├── TelegramPlatformEvent（Telegram 特有）
+    ├── ...（其他平台）
+```
+
+**文件**：astrbot/core/platform/astr_message_event.py
+
+## 二、通用方法（所有平台都有）
+
+这些方法在 `AstrMessageEvent` 基类中定义：
+
+| 方法 | 说明 |
+|------|------|
+| `get_message_str()` | 获取纯文本消息 |
+| `get_messages()` | 获取消息组件列表 |
+| `get_sender()` | 获取发送者信息 |
+| `get_group()` | 获取群信息 |
+| `get_platform_name()` | 获取平台名称 |
+| `make_result()` | 创建消息结果 |
+| `send(result)` | 发送消息 |
+| `stop_event()` | 停止事件传播 |
+
+## 三、平台特定方法
+
+这些方法在各平台的事件子类中定义：
+
+### QQ (aiocqhttp)
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py
+
+```python
+class AiocqhttpMessageEvent(AstrMessageEvent):
+    # QQ 特有方法
+    def get_reply_id(self) -> int | None:
+        """获取回复消息 ID"""
+    
+    def is_group_admin(self) -> bool:
+        """是否是群管理员"""
+    
+    def is_group_owner(self) -> bool:
+        """是否是群主"""
+    
+    # 还有更多平台特定属性
+    _raw_event: dict  # 原始 OneBot 事件数据
+```
+
+### Discord
+
+**文件**：astrbot/core/platform/sources/discord/discord_platform_event.py
+
+```python
+class DiscordPlatformEvent(AstrMessageEvent):
+    # Discord 特有方法/属性
+    _message: discord.Message  # 原始 discord.py 消息对象
+```
+
+### Telegram
+
+**文件**：astrbot/core/platform/sources/telegram/tg_event.py
+
+```python
+class TelegramPlatformEvent(AstrMessageEvent):
+    # Telegram 特有方法/属性
+    _update: Update  # 原始 python-telegram-bot 更新对象
+```
+
+## 四、如何判断方法是否通用
+
+### 方法一：看类型提示
+
+```python
+from astrbot.api.event import AstrMessageEvent
+
+async def handler(self, event: AstrMessageEvent):
+    # event 的类型是 AstrMessageEvent，只能调用基类方法
+    # 如果需要平台特定方法，需要类型断言
+    if isinstance(event, AiocqhttpMessageEvent):
+        reply_id = event.get_reply_id()  # QQ 特有
+```
+
+### 方法二：检查平台名称
+
+```python
+@filter.command("test")
+async def test(self, event):
+    platform = event.get_platform_name()
+    
+    if platform == "aiocqhttp":
+        # QQ 平台，可以使用 QQ 特有方法
+        # 但需要小心，因为 event 的类型还是 AstrMessageEvent
+        # 需要通过 isinstance 判断或直接访问属性
+        if hasattr(event, 'is_group_admin'):
+            is_admin = event.is_group_admin()
+    
+    elif platform == "discord":
+        # Discord 平台
+        pass
+```
+
+### 方法三：使用 `isinstance` 判断
+
+```python
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
+@filter.command("admin")
+async def check_admin(self, event):
+    if isinstance(event, AiocqhttpMessageEvent):
+        # 安全地调用 QQ 特有方法
+        is_admin = event.is_group_admin()
+        yield event.make_result().message(f"是否管理员: {is_admin}")
+    else:
+        yield event.make_result().message("此命令仅支持 QQ 平台")
+```
+
+## 五、实际案例：跨平台兼容
+
+```python
+@filter.command("info")
+async def get_info(self, event):
+    platform = event.get_platform_name()
+    
+    info = []
+    
+    # 通用信息（所有平台）
+    sender = event.get_sender()
+    info.append(f"发送者: {sender.nickname}")
+    
+    group = event.get_group()
+    if group:
+        info.append(f"群名称: {group.name}")
+    
+    # 平台特定信息
+    if platform == "aiocqhttp":
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+        
+        if isinstance(event, AiocqhttpMessageEvent):
+            info.append(f"是否管理员: {event.is_group_admin()}")
+            info.append(f"是否群主: {event.is_group_owner()}")
+    
+    elif platform == "discord":
+        from astrbot.core.platform.sources.discord.discord_platform_event import DiscordPlatformEvent
+        
+        if isinstance(event, DiscordPlatformEvent):
+            # Discord 特有属性
+            raw_message = event._message
+            info.append(f"消息 ID: {raw_message.id}")
+    
+    yield event.make_result().message("\n".join(info))
+```
+
+## 六、总结
+
+| 判断方式 | 适用场景 |
+|---------|---------|
+| `event.get_platform_name()` | 运行时判断平台 |
+| `isinstance(event, PlatformEventClass)` | 类型安全地调用平台特定方法 |
+| `hasattr(event, 'method_name')` | 运行时检查方法是否存在 |
+
+**核心原则**：
+- 如果方法在 `AstrMessageEvent` 基类中定义 → **所有平台通用**
+- 如果方法只在某个平台的事件子类中定义 → **平台特定**
+
+你可以通过查看 `AstrMessageEvent` 的源码来确认哪些方法是通用的，然后查看各个平台的事件类来了解平台特定方法。
+
+# 管线会将 AstrBotMessage 包装为特定平台实现的继承类
+
+AstrBot的管线在接收到消息时会根据平台判断，然后将 AstrBotMessage 包装为特定平台实现的继承类
+
+注：平台适配器本身就是已经继承了 `Platform` 类的实例，如 `AiocqhttpAdapter` 它本身已经重载了 `create_event` 方法，所以会返回 `AiocqhttpMessageEvent` 类的实例。
+
+用代码来验证：
+
+## 流程分析
+
+### 1. 基类 `Platform.create_event`
+
+**文件**：astrbot/core/platform/platform.py
+
+```python
+def create_event(self, message: AstrBotMessage) -> AstrMessageEvent:
+    return AstrMessageEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+    )
+```
+
+### 2. 各平台适配器重写 `create_event`
+
+**QQ (aiocqhttp)**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py
+
+```python
+def create_event(self, message: AstrBotMessage) -> AiocqhttpMessageEvent:
+    return AiocqhttpMessageEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        bot=self.bot,  # QQ 特有：CQHttp 客户端对象
+    )
+```
+
+**Discord**：astrbot/core/platform/sources/discord/discord_platform_adapter.py
+
+```python
+def create_event(self, message: AstrBotMessage, ...) -> DiscordPlatformEvent:
+    return DiscordPlatformEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        _message=discord_message,  # Discord 特有：原始 Message 对象
+    )
+```
+
+**Telegram**：astrbot/core/platform/sources/telegram/tg_adapter.py
+
+```python
+def create_event(self, message: AstrBotMessage) -> TelegramPlatformEvent:
+    return TelegramPlatformEvent(
+        message_str=message.message_str,
+        message_obj=message,
+        platform_meta=self.meta(),
+        session_id=message.session_id,
+        _update=update,  # Telegram 特有：原始 Update 对象
+    )
+```
+
+---
+
+## 完整流程
+
+```
+用户发送消息
+    ↓
+平台适配器收到消息（aiocqhttp / discord / telegram 等）
+    ↓
+适配器将原始消息转换为 AstrBotMessage（统一格式）
+    ↓
+调用 self.create_event(message)  ← 关键步骤！
+    ↓
+根据平台类型创建对应的事件类：
+    - aiocqhttp → AiocqhttpMessageEvent(AstrMessageEvent)
+    - discord → DiscordPlatformEvent(AstrMessageEvent)
+    - telegram → TelegramPlatformEvent(AstrMessageEvent)
+    - ...
+    ↓
+调用 self.commit_event(event) 提交到事件队列
+    ↓
+Pipeline 处理事件
+    ↓
+路由到插件 Handler
+    ↓
+插件拿到的 event 实际上是特定平台的子类实例
+```
+
+---
+
+## 结论
+
+**是的，AstrBot 的管线在接收到消息时会根据平台判断，将 `AstrBotMessage` 包装为特定平台实现的继承类。**
+
+每个平台适配器都会**重写** `create_event` 方法，返回自己平台特定的事件类。这些子类：
+- 继承自 `AstrMessageEvent`（基类）
+- 包含平台特定的属性和方法
+- 保留了基类的所有通用方法
+
+所以在插件中：
+```python
+@filter.command("test")
+async def test(self, event):
+    # event 的类型是 AstrMessageEvent（类型提示）
+    # 但实际运行时它是 AiocqhttpMessageEvent / DiscordPlatformEvent 等子类
+    
+    # 通用方法（所有平台都能用）
+    await event.send(event.make_result().message("Hello"))
+    
+    # 平台特定方法（需要 isinstance 判断）
+    if isinstance(event, AiocqhttpMessageEvent):
+        is_admin = event.is_group_admin()  # QQ 特有
+```
+
+# 平台适配器的一些说明
+
+- 平台适配器是单例的，在 AstrBot 启动时创建，整个生命周期只创建一次。创建流程：
+  - AstrBot 启动时，读取配置文件中的平台配置
+  - 通过 register_platform_adapter 装饰器找到对应的适配器类
+  - 创建适配器实例，传入配置和事件队列
+  - 调用 adapter.run() 启动平台（建立 WebSocket 连接等）
+  - 之后所有消息都通过同一个适配器实例处理
+在 astrbot\core\platform\manager.py 应该有相关代码
+
+平台适配器继承自 `Platform` 类，如 `AiocqhttpAdapter`。`AiocqhttpAdapter` 就是 OneBot V11 标准的消息平台适配器，支持反向 WebSockets。
+
+# 访问平台原生API
+
+通用 API 功能有限，只能获取基本信息。因此，为了功能丰富，可调用所有 OneBot v11 API 方法。
+
+注意事项：
+- 权限要求 ：获取群列表和好友列表等功能可能需要机器人有相应的权限
+- 异步调用 ：所有 API 都是异步方法，需要使用 await
+- 错误处理 ：建议添加 try-except 捕获可能的错误
+- 平台检查 ：在调用前检查平台是否加载，避免 AttributeError
+
+## 重点：获取对应平台框架的客户端实例
+
+以 aiocqhttp 为例:
+AiocqhttpAdapter 中有一个 self.bot 属性(类型为 CQHttp 的实例，定义在第55行)，它就是 aiocqhttp 的 CQHttp 客户端：
+```python
+self.bot = CQHttp(
+    use_ws_reverse=True,
+    import_name="aiocqhttp",
+    api_timeout_sec=180,
+    access_token=platform_config.get("ws_reverse_token"),
+)
+```
+
+CQHttp 是 aiocqhttp 框架提供的，而不是 AstrBot 自己实现的。AstrBot 导入了它，所以可以直接使用。
+通过这个 `bot` 实例，可以调用所有 OneBot v11 API 方法，如：
+
+```python
+# 获取群列表
+group_list = await bot.get_group_list()
+
+# 获取好友列表
+friend_list = await bot.get_friend_list()
+
+# 获取群成员列表
+member_list = await bot.get_group_member_list(group_id=123456)
+```
+
+## 获取平台适配器实例
+
+```python
+# 方式一：按类型获取（已过时，但能用）
+qq_platform = self.context.get_platform("aiocqhttp")
+
+# 方式二：按 ID 获取（推荐）
+qq_platform = self.context.get_platform_inst("aiocqhttp")
+```
+## 完整示例
+
+```python
+from astrbot.api.star import Star, Context
+from astrbot.api.event import filter
+
+class MyPlugin(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+    
+    @filter.command("groups")
+    async def get_groups(self, event):
+        # 获取 QQ 平台实例
+        qq_platform = self.context.get_platform_inst("aiocqhttp")
+        if not qq_platform:
+            yield event.make_result().message("QQ 平台未加载")
+            return
+        
+        # 获取 aiocqhttp 客户端
+        bot = qq_platform.bot
+        
+        # 调用 OneBot v11 原生 API
+        try:
+            group_list = await bot.get_group_list()
+            
+            if not group_list:
+                yield event.make_result().message("暂无群聊")
+            else:
+                msg = "\n".join([f"群号: {g['group_id']}, 名称: {g['group_name']}" for g in group_list])
+                yield event.make_result().message(msg)
+        
+        except Exception as e:
+            logger.error(f"获取群列表失败: {e}")
+            yield event.make_result().message(f"获取群列表失败: {str(e)}")
+    
+    @filter.command("friends")
+    async def get_friends(self, event):
+        qq_platform = self.context.platform_manager.get_platform("aiocqhttp")
+        if not qq_platform:
+            yield event.make_result().message("QQ 平台未加载")
+            return
+        
+        bot = qq_platform.bot
+        
+        try:
+            friend_list = await bot.get_friend_list()
+            
+            if not friend_list:
+                yield event.make_result().message("暂无好友")
+            else:
+                msg = "\n".join([f"QQ: {f['user_id']}, 昵称: {f['nickname']}" for f in friend_list])
+                yield event.make_result().message(msg)
+        
+        except Exception as e:
+            logger.error(f"获取好友列表失败: {e}")
+            yield event.make_result().message(f"获取好友列表失败: {str(e)}")
+```
+
+
+# 以 aiocqhttp 为例，如何通过 `bot` 对象调用 cqhttp 接口
+
+详细说明 AstrBot 框架内部是如何使用 `bot` 对象调用 cqhttp 接口的：
+
+## 一、`bot` 对象的传递链
+
+```
+AiocqhttpAdapter.__init__()
+    ↓ 创建 CQHttp 实例
+self.bot = CQHttp(...)
+
+AiocqhttpAdapter.create_event(message)
+    ↓ 将 bot 传给事件对象
+return AiocqhttpMessageEvent(..., bot=self.bot)
+
+AiocqhttpMessageEvent.__init__()
+    ↓ 保存 bot 对象
+self.bot = bot
+```
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py#L55
+
+---
+
+## 二、框架内部调用 cqhttp 接口的方式
+
+### 方式一：直接调用（如 `bot.send_group_msg()`）
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py#L107
+
+```python
+if is_group and isinstance(session_id_int, int):
+    await bot.send_group_msg(
+        group_id=session_id_int,
+        message=messages,
+        **routing_params,
+    )
+elif not is_group and isinstance(session_id_int, int):
+    await bot.send_private_msg(
+        user_id=session_id_int,
+        message=messages,
+        **routing_params,
+    )
+```
+
+### 方式二：通过 `call_action` 调用（如 `bot.call_action("get_group_info")`）
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py#L248
+
+```python
+info: dict = await self.bot.call_action(
+    "get_group_info",
+    group_id=group_id,
+    **routing_params,
+)
+
+members: list[dict] = await self.bot.call_action(
+    "get_group_member_list",
+    group_id=group_id,
+    **routing_params,
+)
+```
+
+### 方式三：转发消息调用
+
+**文件**：astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py#L167
+
+```python
+await bot.call_action("send_group_forward_msg", **payload)
+# 或
+await bot.call_action("send_private_forward_msg", **payload)
+```
+
+---
+
+## 三、两种调用方式的关系
+
+**方式一和方式二本质上是一样的！**
+
+因为 `bot.send_group_msg()` 会通过 `__getattr__` 转换为 `bot.call_action("send_group_msg", ...)`：
+
+```python
+# 方式一：直接调用（语法糖）
+await bot.send_group_msg(group_id=123, message="Hello")
+
+# 方式二：显式调用（底层实现）
+await bot.call_action("send_group_msg", group_id=123, message="Hello")
+
+# 两者等价！
+```
+
+---
+
+## 四、完整流程示例
+
+以 `AiocqhttpMessageEvent.get_group()` 为例：
+
+```python
+async def get_group(self, group_id=None, **kwargs):
+    # 1. 获取群 ID
+    group_id = int(self.get_group_id())
+    
+    # 2. 准备路由参数（多账号场景）
+    routing_params = {}
+    if getattr(self.message_obj, "self_id", None):
+        routing_params["self_id"] = self.message_obj.self_id
+    
+    # 3. 调用 cqhttp API 获取群信息
+    info: dict = await self.bot.call_action(
+        "get_group_info",
+        group_id=group_id,
+        **routing_params,
+    )
+    
+    # 4. 调用 cqhttp API 获取群成员列表
+    members: list[dict] = await self.bot.call_action(
+        "get_group_member_list",
+        group_id=group_id,
+        **routing_params,
+    )
+    
+    # 5. 转换为 AstrBot 统一格式
+    group = Group(
+        group_id=str(group_id),
+        group_name=info.get("group_name"),
+        members=[...],
+    )
+    
+    return group
+```
+
+---
+
+## 五、插件中如何调用
+
+回到你的问题：**插件中如何获取群列表和好友列表？**
+
+通过 `context.platform_manager.get_platform("aiocqhttp")` 获取平台实例，然后访问 `bot` 属性：
+
+```python
+from astrbot.api.star import Star, Context
+from astrbot.api.event import filter
+
+class MyPlugin(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+    
+    @filter.command("groups")
+    async def get_groups(self, event):
+        # 获取 QQ 平台实例
+        qq_platform = self.context.platform_manager.get_platform("aiocqhttp")
+        if not qq_platform:
+            yield event.make_result().message("QQ 平台未加载")
+            return
+        
+        # 获取 bot 对象
+        bot = qq_platform.bot
+        
+        # 调用 cqhttp API
+        group_list = await bot.get_group_list()
+        
+        msg = "\n".join([f"群号: {g['group_id']}, 名称: {g['group_name']}" for g in group_list])
+        yield event.make_result().message(msg)
+```
+
+---
+
+## 总结
+
+| 问题 | 答案 |
+|------|------|
+| `bot` 对象从哪来？ | `AiocqhttpAdapter.__init__()` 中创建的 `CQHttp` 实例 |
+| 如何传递给事件？ | `create_event()` 时作为参数传给 `AiocqhttpMessageEvent` |
+| 框架内部如何调用？ | `self.bot.call_action("api_name", **params)` 或 `self.bot.api_name(**params)` |
+| 插件中如何调用？ | `context.platform_manager.get_platform("aiocqhttp").bot` |
+
+**核心要点**：AstrBot 在平台适配器初始化时创建 `CQHttp` 实例，然后通过事件对象传递给各个处理方法。插件开发者可以通过 `platform_manager` 获取平台实例，然后直接使用 `bot` 对象调用任何 OneBot v11 API。
+
+## 方式一语法糖的说明
+
+这不是语法糖，而是 Python 的**魔术方法**（magic method）机制。具体是 `__getattr__` 方法。
+
+**官方文档**：
+- [Python 文档 - 特殊方法名称](https://docs.python.org/zh-cn/3/reference/datamodel.html#object.__getattr__)
+
+`__getattr__` 的作用：当通过 `obj.attr` 访问一个**不存在的属性**时，Python 会自动调用 `obj.__getattr__("attr")`。
+
+在 aiocqhttp 中的实现：
+
+```python
+# aiocqhttp/api.py 第 27-30 行
+def __getattr__(self, item: str) -> Callable[..., Union[Awaitable[Any], Any]]:
+    """获取一个可调用对象，用于调用对应 API。"""
+    return functools.partial(self.call_action, item)
+```
+
+所以 `bot.send_group_msg(group_id=123)` 等价于 `bot.call_action("send_group_msg", group_id=123)`。
+
+这是 aiocqhttp 库实现的，不是 AstrBot 实现的，也不是 Python 的语法糖，而是利用 Python 的 `__getattr__` 魔术方法实现的**动态方法分发**。
+
+
+# 关于平台适配相关的简单总结
+
+没关系，理清就好。
+
+简单总结一下：
+
+- `AiocqhttpAdapter`（astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py#L35
+）：平台适配器，负责连接管理、消息接收，**内部创建并持有** `bot` 对象（第 55 行）
+
+- `AiocqhttpMessageEvent`（astrbot/core/platform/sources/aiocqhttp/aiocqhttp_message_event.py#L22）：事件类，负责消息发送和平台特定操作，**通过构造函数接收** `bot` 对象（第 29 行）
+
+所以调用 aiocqhttp API 的不是这两个类本身，而是它们持有的 `bot: CQHttp` 实例。这个实例在适配器创建，传递给事件对象，最终在插件中通过 `event.bot` 或 `platform.bot` 访问。

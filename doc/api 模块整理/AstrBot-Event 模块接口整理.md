@@ -9,6 +9,9 @@
 - **事件对象**：`AstrMessageEvent` — 承载一条从 IM 平台收到的消息
 - **消息构建**：`MessageChain`、`MessageEventResult`、`CommandResult`、`EventResultType`、`ResultContentType` — 用于构建和发送回复消息
 
+注意（以下内容尚未确认，但理应如此且根据 ../other 记录.md 中的 事件类的继承层次 说明，应该就是如此）：事件对象本质应该是经过包装后的继承了 `AstrMessageEvent` 的类，而不是直接使用 `AstrMessageEvent`。只不过用 `AstrMessageEvent` 来表示事件对象更通用，可以减小平台相关性。
+如用`napcat` 获取的消息，应该会被包装为 `AiocqhttpMessageEvent`， 表示 aiocqhttp 平台的消息事件。
+
 ---
 
 ## 一、AstrMessageEvent（事件对象）

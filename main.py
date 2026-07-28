@@ -3,6 +3,7 @@ from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 
+
 # 注册插件
 class SubAgentRouter(Star):
     def __init__(self, context: Context):
@@ -26,5 +27,4 @@ class SubAgentRouter(Star):
 
     @filter.on_llm_request()
     async def _on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        
         return None
