@@ -418,7 +418,101 @@ async def get_weather(self, event: AstrMessageEvent, city: str) -> AsyncGenerato
 
 > `MessageEventResult` 的详细接口说明参见 `AstrBot-Event 模块接口整理.md`。
 
-### 6.5 什么时候需要用 MessageEventResult？
+### 6.5 set_result vs plain_result：不要混淆
+
+`event.set_result()` 和 `event.plain_result()` 名字相似，但用途完全不同。
+
+#### 工具 Handler 的返回值处理逻辑
+
+框架对工具 Handler 和普通 Handler 的返回值处理方式不同：
+
+| 维度 | 工具 Handler（@llm_tool） | 普通 Handler（@command 等） |
+|------|-------------------------|---------------------------|
+| 结果读取方式 | 直接看函数返回值 | 从 `event._result` 中读取 |
+| `set_result` 是否有效 | 无效（返回 `None`） | 有效（设置 `event._result`） |
+| `return plain_result(...)` | 有效（框架识别为 MessageEventResult） | 有效，但通常用 `set_result` |
+| `yield plain_result(...)` | 有效（异步生成器） | 不支持 |
+
+#### 场景一：`return event.plain_result(...)`
+
+类型注解不决定行为，实际返回值的类型才决定行为。即使你注解了 `-> str`，只要实际返回的是 `MessageEventResult`，框架就会直接发给用户。
+
+```python
+@llm_tool(name="test")
+async def test_tool(self, event, city) -> str:  # 注解是 str，但不影响
+    return event.plain_result(f"{city}晴")  # 实际返回 MessageEventResult
+```
+
+框架用 `isinstance(ret, MessageEventResult)` 检查实际返回值，不看类型注解。
+
+#### 场景二：只调用 `event.plain_result()` 但不 yield/return
+
+`event.plain_result()` 只是**创建**了一个 `MessageEventResult` 对象，并没有发送。如果你不 yield 或 return 它，这个对象就被丢弃了。
+
+```python
+@llm_tool(name="test")
+async def test_tool(self, event, city) -> str:
+    event.plain_result("正在处理...")  # 创建了对象但没用，被丢弃
+    return f"{city}晴"  # 实际返回 str，走 LLM 处理
+```
+
+#### 三种写法对比
+
+| 写法 | 实际返回值 | 框架行为 |
+|------|----------|---------|
+| `return "结果"` | `str` | 包装成 TextContent → LLM → 用户 |
+| `return event.plain_result("结果")` | `MessageEventResult` | 直接发给用户，跳过 LLM |
+| `event.plain_result("提示")` + `return "结果"` | `str` | plain_result 被丢弃，走 LLM 处理 |
+
+#### 混合 yield 和 return
+
+如果想先发提示给用户，再把结果交给 LLM 处理，可以混合使用 `yield` 和 `return`：
+
+```python
+async def test_tool(self, event, city):
+    yield event.plain_result("正在处理...")  # 先发给用户
+    result = await do_something(city)
+    return result  # 返回给 LLM，由 LLM 转述给用户
+```
+
+框架会先通过 `yield` 发送消息给用户，然后通过 `return` 把结果交给 LLM 处理。
+
+如果不写 yield，`event.plain_result("提示")` 就只是创建了一个 MessageEventResult 对象，但这个对象没有被赋值给任何变量，也没有被 return/yield，Python 会立即回收它。相当于这行代码什么都没做，属于无效代码。
+
+
+#### set_result 在工具 Handler 中无效
+
+```python
+# 错误：set_result 返回 None，框架看不到 MessageEventResult
+async def bad_tool(self, event, city):
+    event.set_result(event.plain_result("结果"))
+    return  # 等价于 return None
+
+# 正确：直接 return MessageEventResult
+async def good_tool(self, event, city):
+    return event.plain_result("结果")
+
+# 正确：yield MessageEventResult
+async def good_tool_async(self, event, city):
+    yield event.plain_result("结果")
+```
+
+#### set_result 的正确用法
+
+`set_result` 应在非工具 Handler 中使用（如 `@filter.command`），框架会从 `event._result` 中读取结果：
+
+```python
+@filter.command("ban")
+async def ban_handler(self, event):
+    event.set_result(
+        MessageEventResult()
+            .message("你已被拉黑")
+            .set_result_type(EventResultType.STOP)
+    )
+    return
+```
+
+### 6.6 什么时候需要用 MessageEventResult？
 
 当你希望工具直接给用户发消息，而不是把结果返回给 LLM 让 LLM 转述时。典型场景：
 
