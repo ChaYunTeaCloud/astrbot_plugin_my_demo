@@ -15,6 +15,7 @@
 | `api.web` | ⭐⭐ | 插件 Web API 开发 |
 | `api.platform` | ⭐⭐ | 访问消息对象、开发自定义平台适配器 |
 | `api.all` | ⭐⭐ | 便捷导入（不推荐） |
+| `api`（主包） | ⭐⭐⭐⭐ | 直接导入常用工具：logger、sp、html_renderer、agent、llm_tool 等 |
 | `api.provider` | ⭐ | 开发自定义 AI 适配器、高级 AI 调用 |
 
 ---
@@ -556,7 +557,19 @@ class HookPlugin(Star):
   3. 在插件中精细控制 LLM 调用（绕过 Pipeline 直接调用 `text_chat()`）
 - 举例：`from astrbot.api.provider import Provider, ProviderType`
 
-### 5.9 总结
+### 5.9 api（主包）
+
+- 日常插件开发：**经常用到**。提供常用的工具类和装饰器
+- 使用场景：
+  1. 日志记录（`logger.info()` / `logger.error()`）
+  2. 偏好设置存储（`sp.get_async()` / `sp.set_async()`）
+  3. HTML 转图片（`html_renderer.render_t2i()`）
+  4. 注册子 Agent（`@agent()`）
+  5. 注册 LLM 工具（`@llm_tool()`）
+  6. 创建 FunctionTool（`FunctionTool`、`ToolSet`）
+- 举例：`from astrbot.api import logger, sp, html_renderer, agent, llm_tool`
+
+### 5.10 总结
 
 普通插件开发真正会用到的模块只有 `api.event` 和 `api.star`，以及经常用到的 `api.message_components`。`api.platform` 和 `api.provider` 更多是为框架扩展者准备的，而非普通插件开发者。
 
@@ -576,3 +589,4 @@ class HookPlugin(Star):
 | [AstrBot-Util 模块接口整理.md](./AstrBot-Util%20模块接口整理.md) | 会话控制（session_waiter、SessionController） |
 | [AstrBot-Web 模块接口整理.md](./AstrBot-Web%20模块接口整理.md) | Web API 开发（request、json_response 等） |
 | [AstrBot-API-all 模块整理.md](./AstrBot-API-all%20模块整理.md) | 聚合导出模块（from astrbot.api.all import *） |
+| [AstrBot-api__init__导出补充.md](./AstrBot-api__init__导出补充.md) | api/__init__.py 导出补充（logger、sp、html_renderer、agent 等） |

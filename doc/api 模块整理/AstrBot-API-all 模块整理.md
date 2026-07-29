@@ -28,6 +28,11 @@ from astrbot.api.all import *
 | `logger` | `astrbot` | 日志记录器 |
 | `html_renderer` | `astrbot.core` | HTML 渲染工具 |
 | `llm_tool` | `astrbot.core.star.register` | LLM 工具注册装饰器 |
+| `sp` | `astrbot.core` | 偏好设置存储（SharedPreferences） |
+| `agent` | `astrbot.core.star.register` | 子 Agent 注册装饰器 |
+| `BaseFunctionToolExecutor` | `astrbot.core.agent.tool_executor` | 工具执行器基类 |
+
+> 上述导出项的详细说明参见 `AstrBot-api__init__导出补充.md`
 
 ### 2.2 Event 相关
 

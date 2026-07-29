@@ -6,9 +6,11 @@ Tool（工具）是让 LLM（大语言模型）能够**调用外部功能**的�
 
 在 AstrBot 中，Tool 的本质是一个 `FunctionTool` 类。所有工具（包括内置工具、MCP 工具、插件工具）最终都是 `FunctionTool` 实例，存储在 `llm_tools.func_list` 中。
 
-注册工具的两种方式：
-- 继承 `FunctionTool[AstrAgentContext]` 类：灵活，支持完整的 JSON Schema 定义
-- `@filter.llm_tool` 装饰器：简洁，框架自动从 docstring 解析参数 schema
+注册工具的方式：
+- 继承 `FunctionTool[AstrAgentContext]` 类：灵活，支持完整的 JSON Schema 定义（官方推荐）
+- `@filter.llm_tool` 装饰器：简洁，框架自动从 docstring 解析参数 schema（官方推荐）
+- 手动创建 `FunctionTool(handler=...)`：灵活但需注意 handler 绑定，非官方推荐
+- 动态注入（`@filter.on_llm_request` + `req.func_tool.add_tool()`）：按需注册，工具不暴露给全局，仅在特定请求中生效
 
 ## 二、核心类
 
@@ -227,13 +229,227 @@ class WeatherTool(FunctionTool[AstrAgentContext]):
 
 **两种方案功能完全等价**，`@dataclass` 会自动生成 `__init__` 方法。
 
-#### @dataclass 是什么？
+### 方式三：手动创建 FunctionTool
+
+如果你有特殊需求，可以手动创建 `FunctionTool` 并注册。
+
+> **说明**：此方式是框架底层 API 支持的用法，官方文档中仅推荐方式一（`@dataclass` 继承）和方式二（`@llm_tool` 装饰器）。方式三提供了更灵活的控制，但需要手动处理 handler 的绑定问题（见下方注意事项）。
+官方文档中 没有 提到手动创建 FunctionTool(handler=...) 并通过 self.context.add_llm_tools() 注册的方式。方式三是框架底层 API 支持的用法，但不是官方推荐的方式。
+
+```python
+from astrbot.api import FunctionTool
+from astrbot.api.event import AstrMessageEvent
+
+class MyPlugin(Star):
+    def __init__(self, context):
+        super().__init__(context)
+        
+        weather_tool = FunctionTool(
+            name="get_weather",
+            description="获取指定城市的天气信息",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "城市名称"},
+                    "date": {"type": "string", "description": "日期（可选）"}
+                },
+                "required": ["city"]
+            },
+            handler=MyPlugin._get_weather_handler  # 必须传未绑定的类方法，不能是 self._get_weather_handler
+        )
+        
+        # 注册到框架
+        self.context.add_llm_tools(weather_tool)
+    
+    async def _get_weather_handler(self, event: AstrMessageEvent, city: str, date: str = "") -> str:
+        """实际的 handler，第一个参数是 event"""
+        weather = await fetch_weather(city, date)
+        return f"{city}今天{weather}"
+```
+**注意**：通过 `handler` 参数传入的函数，第一个参数必须是 `event`，这与 `@llm_tool` 装饰器的 handler 签名相同。且工具 handler 必须是类的方法 ，这样框架才能把插件实例绑定为第一个参数（self），让 handler 内部可以通过 self 访问插件的其他方法和属性。如果想用全局函数，唯一的办法是让它的第一个参数接收插件实例，但这样做既不优雅，也失去了面向对象的优势，不建议使用。
+
+**重要**：handler 必须传入**未绑定的类方法**（`MyPlugin._get_weather_handler`），不能传入绑定方法（`self._get_weather_handler`）。
+
+**原因**：框架在插件加载后会执行 handler 的重新绑定逻辑（见 star_manager.py#L1273-1298）。它会检查 `handler.__module__` 是否属于当前插件模块，如果是，则用 `functools.partial(handler, star_cls)` 把插件实例绑定为第一个参数（self）。
+
+- 传入未绑定类方法 `MyPlugin._get_weather_handler`：partial 绑定后调用 `func(star_cls, event, **kwargs)`，self ← star_cls，event ← event，参数正确
+- 传入绑定方法 `self._get_weather_handler`：partial 绑定后调用 `bound_method(star_cls, event, **kwargs)`，由于 self 已绑定，star_cls 会被当作 event，导致参数全部错位
+
+这与 `@llm_tool` 装饰器的处理路径一致：装饰器注册时 handler 是未绑定函数，由框架在加载时统一绑定实例。
+
+#### 绑定逻辑详细说明
+
+不能传入：传入绑定方法 `self._get_weather_handler`的具体原因，
+          
+经过深入源码分析，**这种写法有问题**。让我解释原因。
+
+##### 问题所在
+
+假设传入的是 `handler=self._get_weather_handler`（绑定方法）。
+
+astrbot/core/star/star_manager.py#L1273-1298 在每次插件加载后，会执行一段"handler 重新绑定"的修正逻辑：
+
+```python
+# star_manager.py#L1276-1298
+if ft.handler and (
+    getattr(ft.handler, "__module__", None) == metadata.module_path
+    ...
+):
+    raw_handler = ft.handler.func if isinstance(ft.handler, functools.partial) else ft.handler
+    ft.handler_module_path = metadata.module_path
+    ft.handler = raw_handler
+    if not plugin_disabled and metadata.star_cls is not None:
+        ft.handler = functools.partial(raw_handler, metadata.star_cls)  # 关键问题
+```
+
+这段逻辑的设计目的是为 `@llm_tool` 装饰器注册的**未绑定函数**服务的——把插件实例通过 `functools.partial` 绑定为第一个参数（self）。
+
+##### 为什么会出错
+
+当 `handler=self._get_weather_handler`（绑定方法）时：
+
+1. `self._get_weather_handler.__module__` == 插件模块路径 → 匹配修正条件
+2. 修正后：`ft.handler = functools.partial(self._get_weather_handler, star_cls)`
+3. 工具被调用时（astrbot/core/provider/func_tool_manager.py#L253-255）：
+   ```
+   handler(event, city="北京")
+   = partial(self._get_weather_handler, star_cls)(event, city="北京")
+   = self._get_weather_handler(star_cls, event, city="北京")
+   ```
+4. 由于 `self._get_weather_handler` 已是绑定方法（self 已绑定），实际等价于：
+   ```
+   _get_weather_handler(self, star_cls, event, "北京")
+   ```
+   签名 `(self, event, city, date="")` 收到的是：
+   - `event` ← `star_cls`（插件实例，类型错！）
+   - `city` ← `event`（AstrMessageEvent，类型错！）
+   - `date` ← `"北京"`
+
+**参数全部错位**，运行时会因类型不匹配而报错。
+
+##### 正确写法
+
+handler 必须传入**未绑定**的类方法，让框架通过 `functools.partial` 完成实例绑定：
+
+```python
+handler=MyPlugin._get_weather_handler  # 未绑定的类方法，不是 self._get_weather_handler
+```
+
+##### 总结
+
+此写法 `handler=self._get_weather_handler`（绑定方法）是**错误的**。
+
+核心原因在于 astrbot/core/star/star_manager.py#L1273-1298 的 handler 重新绑定逻辑：
+
+| 传入方式 | partial 绑定后调用 | 结果 |
+|---------|-------------------|------|
+| `MyPlugin._get_weather_handler`（未绑定） | `func(star_cls, event, **kwargs)` | self←star_cls, event←event ✓ |
+| `self._get_weather_handler`（绑定方法） | `bound_method(star_cls, event, **kwargs)` | self 已绑定，star_cls 被当作 event ✗ |
+
+这段修正逻辑是 `@llm_tool` 装饰器处理路径的一部分：装饰器注册时 handler 是未绑定函数，框架在插件加载时统一用 `functools.partial` 绑定插件实例。手动创建 FunctionTool 走的是同一条路径，所以 handler 也必须是未绑定的类方法。
+
+文档已改为 `handler=MyPlugin._get_weather_handler` 并补充了原因说明。
+
+## 六、Handler 返回值
+
+工具 handler 的返回值有两种形式，框架会采用不同的处理策略。
+
+### 6.1 两种返回值类型
+
+工具 handler 的返回值支持两种形式：
+
+| 返回值类型 | 说明 | 处理方式 |
+|-----------|------|---------|
+| `str` / `None` | 普通字符串 | 被包装成 `TextContent` 返回给 LLM，由 LLM 决定怎么回复用户 |
+| `AsyncGenerator[MessageEventResult, None]` | 异步生成器，产出消息链 | 直接发送给用户，同时通知 LLM "工具已直接发送消息" |
+
+`MessageEventResult` 是 AstrBot 的 消息链对象 ，继承自 `MessageChain` ，可以包含文本、图片、@等多种消息组件。
+
+从 astrbot\core\astr_agent_tool_exec.py#L660-693 可以看到:
+
+- 如果返回的是 str ：框架会把它包装成 mcp.types.TextContent 返回给 LLM，LLM 再决定怎么回复用户
+- 如果返回的是 MessageEventResult （通过 yield ）：框架会 直接把消息发送给用户 （ event.send() ），同时 yield None 告诉 Agent Loop "工具已经直接发消息了，不用再让 LLM 回复了"
+
+### 6.2 返回 str（常用）
+
+最简单的方式，适合大多数工具场景。
+
+```python
+@llm_tool(name="get_weather")
+async def get_weather(self, event: AstrMessageEvent, city: str) -> str:
+    """获取天气"""
+    weather = await fetch_weather(city)
+    return f"{city}今天{weather}"  # 返回字符串
+```
+
+框架会把返回的字符串包装成 `TextContent` 返回给 LLM，LLM 拿到结果后再回复用户。
+
+### 6.3 返回 MessageEventResult（高级）
+
+当需要工具**直接给用户发消息**时使用，典型场景：
+- 工具执行时间长，需要先给用户一个"正在处理"的提示
+- 需要发送富文本消息（图片、卡片等）
+- 不想让 LLM 再加工工具结果，直接展示给用户
+
+```python
+@llm_tool(name="get_weather")
+async def get_weather(self, event: AstrMessageEvent, city: str) -> AsyncGenerator[MessageEventResult, None]:
+    """获取天气"""
+    yield event.plain_result("正在查询天气...")  # 先给用户一个提示
+    weather = await fetch_weather(city)
+    yield event.plain_result(f"{city}今天{weather}")  # 直接把结果发给用户
+```
+
+当 handler 是异步生成器时，框架会：
+1. 每次 `yield` 的 `MessageEventResult` 都直接发送给用户（`event.send()`）
+2. yield `None` 告诉 Agent Loop "工具已经直接发消息了，不用再让 LLM 回复了"
+
+### 6.4 两种返回值对比
+
+| 维度 | `str` 返回值 | `MessageEventResult` 返回值 |
+|------|-------------|---------------------------|
+| 复杂度 | 简单 | 较复杂 |
+| 消息流向 | 工具 → LLM → 用户 | 工具 → 用户 |
+| 适用场景 | 大多数工具 | 需要直接交互的工具 |
+| LLM 感知 | LLM 能看到结果并加工 | LLM 收到通知，不再回复 |
+| 流式支持 | 不支持 | 支持（可多次 yield） |
+
+**简单工具用 `str` 返回值就行，复杂交互场景才需要 `MessageEventResult`。**
+
+> `MessageEventResult` 的详细接口说明参见 `AstrBot-Event 模块接口整理.md`。
+
+### 6.5 什么时候需要用 MessageEventResult？
+
+当你希望工具直接给用户发消息，而不是把结果返回给 LLM 让 LLM 转述时。典型场景：
+
+- 工具执行时间长，需要先给用户一个"正在处理"的提示
+- 需要发送富文本消息（图片、卡片等）
+- 不想让 LLM 再加工工具结果，直接展示给用户
+
+```python
+# 返回 str：LLM 拿到结果后再回复用户
+async def my_tool(self, event, query) -> str:
+    return "查询结果：..."  # LLM 会把这个内容转述给用户
+
+# 返回 MessageEventResult：工具直接发消息给用户
+async def my_tool(self, event, query) -> AsyncGenerator[MessageEventResult, None]:
+    yield event.plain_result("正在查询...")  # 先给用户一个提示
+    result = await do_query(query)
+    yield event.plain_result(f"查询结果：{result}")  # 直接把结果发给用户
+```
+简单工具用 str 返回值就行，复杂交互场景才需要 MessageEventResult 。
+
+## 七、上下文相关类
+
+继承 `FunctionTool` 时，需要理解几个上下文相关类。`@llm_tool` 方式不需要直接操作这些类。
+
+### @dataclass 是什么？
 
 `@dataclass` 是装饰器，用于将类转换为**数据类**。AstrBot 使用的是 Pydantic 版本（`from pydantic.dataclasses import dataclass`），它扩展了 Python 标准库的 dataclass，提供更强的数据验证能力。
 
 使用 `@dataclass` 后，你可以直接在类体中用**类型注解 + 默认值**的方式定义字段，而不需要手动调用 `super().__init__()`。
 
-#### AstrAgentContext 是什么？
+### AstrAgentContext 是什么？
 
 `AstrAgentContext` 是专门为 Tool 设计的上下文包装类，包含：
 
@@ -245,7 +461,7 @@ class AstrAgentContext:
     extra: dict[str, str]     # 自定义扩展数据
 ```
 
-#### ContextWrapper 是什么？
+### ContextWrapper 是什么？
 
 `ContextWrapper` 是包裹 `AstrAgentContext` 的**外层容器**，额外提供了对话历史和超时控制功能。它是 Tool 的 `call` 方法实际接收的参数类型。
 
@@ -259,16 +475,19 @@ class ContextWrapper(Generic[TContext]):
     tool_call_timeout: int = 120   # 工具调用超时时间（秒）
 ```
 
-**作用**：
-- 作为 Agent 执行时的统一上下文传递载体
-- 自动维护 LLM 的对话历史
-- 控制工具调用的超时时间
+| 字段 | 用途 | 说明 |
+|------|------|------|
+| `context` | `AstrAgentContext` | 通过它可以访问 `Context` 和 `event` |
+| `messages` | LLM 对话历史 | 由 Agent Runner 自动维护，用于上下文对话 |
+| `tool_call_timeout` | 超时控制 | 控制工具调用的最大等待时间 |
 
 **与 AstrAgentContext 的关系**：
 - `ContextWrapper` 是外层容器，`context` 字段存储 `AstrAgentContext`
 - 访问业务上下文需要通过 `context.context`（第一个是 ContextWrapper 的字段，第二个是 AstrAgentContext 的字段）
 
-#### 为什么使用泛型而不是直接传参？
+**对插件开发者来说，`ContextWrapper` 的主要用途确实是间接获取 `context` 和 `event`**。`messages` 和 `tool_call_timeout` 是框架额外提供的能力，大多数场景下用不到。
+
+### 为什么使用泛型而不是直接传参？
 
 `ContextWrapper` 使用了 `Generic[TContext]` 泛型设计，而不是直接固定为 `AstrAgentContext`。原因如下：
 
@@ -297,9 +516,7 @@ NoContext = ContextWrapper[None]
 
 你不需要关心泛型设计的细节，直接使用 `ContextWrapper[AstrAgentContext]` 即可。泛型主要是框架层面的设计，为未来扩展预留空间。
 
-这与 `FunctionTool[TContext]` 的泛型设计思路相同：框架层面保留泛型，实际插件开发中只需指定 `AstrAgentContext`。
-
-#### FunctionTool 的泛型设计
+### FunctionTool 的泛型设计
 
 `FunctionTool` 同样使用了 `Generic[TContext]` 泛型设计，与 `ContextWrapper` 的思路完全一致。
 
@@ -333,7 +550,7 @@ class WeatherTool(FunctionTool[AstrAgentContext]):
         ...
 ```
 
-#### 泛型设计总结
+**泛型设计总结**
 
 | 类 | 泛型参数 | 实际使用 |
 |---|---------|---------|
@@ -344,119 +561,9 @@ class WeatherTool(FunctionTool[AstrAgentContext]):
 
 对插件开发者来说，直接指定 `AstrAgentContext` 即可，无需关心泛型设计的细节。
 
-#### @llm_tool 方式与 ContextWrapper 的关系
+### 上下文类的生命周期
 
-使用 `@llm_tool` 装饰器注册的工具，**不需要直接操作 `ContextWrapper`**。
-
-从源码 strbot\core\provider\func_tool_manager.py 中查看，框架会自动从 `ContextWrapper` 中提取 `event`，并直接传给 `handler`。
-```python
-# @filter.llm_tool decorated tools have a handler attribute, which is the actual callable.
-if self._wrapped.handler is not None:
-    event = context.context.event  # 框架从 ContextWrapper 中提取 event
-    result = self._wrapped.handler(event, **kwargs)  # 只传入 event 和业务参数
-```
-因此可得出结论：
-@llm_tool 方式不需要 ContextWrapper ，因为：
-1. event 已通过方法参数传入
-   - 框架自动从 ContextWrapper[AstrAgentContext] 中提取 event
-   - 直接传给 handler 的第一个参数
-2. Context 在 Star 初始化时就有了
-   - 通过 self.context 访问（Star 基类的属性）
-   - 不需要从 ContextWrapper 中获取
-3. ContextWrapper 是框架内部使用的
-   - 用于维护对话历史、超时控制等
-   - 插件开发者无需直接操作
-
-**框架自动处理的逻辑**
-
-```python
-# func_tool_manager.py#L252-L255
-# 框架从 ContextWrapper 中提取 event，直接传给 handler
-if self._wrapped.handler is not None:
-    event = context.context.event  # 自动提取 event
-    result = self._wrapped.handler(event, **kwargs)  # 只传入 event 和业务参数
-```
-
-**@llm_tool 方式如何获取所需信息**
-
-| 信息 | 获取方式 |
-|------|---------|
-| `event`（AstrMessageEvent） | handler 的第一个参数，框架自动传入 |
-| `context`（Context） | `self.context`（Star 基类的属性，初始化时已存在） |
-| 对话历史 | 不需要（框架内部维护） |
-| 工具调用超时 | 不需要（使用默认值） |
-
-**与继承 FunctionTool 方式的对比**
-
-| 方面 | `@llm_tool` 装饰器（推荐） | 继承 `FunctionTool` |
-|------|-------------------|---------------------|
-| 代码复杂度 | 简洁，无需处理 ContextWrapper | 复杂，需要理解 ContextWrapper 层级 |
-| handler 第一个参数 | `event`（AstrMessageEvent） | `context`（ContextWrapper[AstrAgentContext]） |
-| 获取 Context | `self.context`（Star 基类） | `context.context.context`（从 ContextWrapper 中提取） |
-| 获取 event | 直接通过参数 | `context.context.event` |
-| 支持 required 字段 | ❌ 不支持 | ✅ 支持 |
-| 获取对话历史 | 不需要 | `context.messages` |
-| 获取超时设置 | 不需要 | `context.tool_call_timeout` |
-
-**什么时候用 @llm_tool？（绝大多数场景）**
-
-优先使用 `@llm_tool` 装饰器，因为：
-- 代码更简洁
-- 不需要处理 `ContextWrapper` 的复杂性
-- 直接通过参数获取 `event`
-- 通过 `self.context` 获取 `Context`
-
-**什么时候必须用 FunctionTool？（仅限以下情况）**
-
-只有当你需要以下功能时，才使用继承 `FunctionTool` 的方式：
-- **需要 `required` 字段限定必填参数**（唯一的必要场景）
-- 访问对话历史（`context.messages`）
-- 控制工具调用超时
-- 更灵活的上下文传递
-
-否则，`@llm_tool` 已经足够用了，而且更简洁。
-
-`ContextWrapper` 的目的**不仅是拿到 `context` 和 `event`**，它还提供了其他重要功能。
-
-##### ContextWrapper 的三个字段
-
-```python
-@dataclass
-class ContextWrapper(Generic[TContext]):
-    context: TContext              # 被包装的上下文（AstrAgentContext）
-    messages: list[Message]        # LLM 对话历史
-    tool_call_timeout: int = 120   # 工具调用超时时间
-```
-
-| 字段 | 用途 | 说明 |
-|------|------|------|
-| `context` | `AstrAgentContext` | 通过它可以访问 `Context` 和 `event` |
-| `messages` | LLM 对话历史 | 由 Agent Runner 自动维护，用于上下文对话 |
-| `tool_call_timeout` | 超时控制 | 控制工具调用的最大等待时间 |
-
-##### 对插件开发者的实际意义
-
-**在两种使用方式中，你是否需要 `messages` 和 `tool_call_timeout`？**
-
-| 使用方式 | 能获取 `messages` | 能获取 `tool_call_timeout` |
-|---------|-------------------|---------------------------|
-| `@llm_tool` 装饰器 | ❌ 不需要 | ❌ 不需要 |
-| 继承 `FunctionTool` | ✅ `context.messages` | ✅ `context.tool_call_timeout` |
-
-##### 什么时候需要这些额外功能？
-
-- **访问对话历史**：需要根据之前的对话内容决定工具行为时
-- **控制超时**：工具调用耗时较长，需要自定义超时时间时
-
-**但实际上，大多数插件工具不需要这些功能**。对于简单的工具（如查询天气、搜索信息），`@llm_tool` 方式已经足够了。
-
-##### 总结
-
-**对插件开发者来说，`ContextWrapper` 的主要用途确实是间接获取 `context` 和 `event`**。`messages` 和 `tool_call_timeout` 是框架额外提供的能力，大多数场景下用不到。
-
-#### ContextWrapper、AstrAgentContext、Context 的生命周期
-
-##### ContextWrapper 每次 Agent 运行都创建新实例
+#### ContextWrapper 每次 Agent 运行都创建新实例
 
 每次 Agent 运行时，框架都会创建新的 `ContextWrapper` 实例，包装 `AstrAgentContext`：
 
@@ -480,7 +587,7 @@ run_context=AgentContextWrapper(
 AgentContextWrapper = ContextWrapper[AstrAgentContext]
 ```
 
-##### AstrAgentContext 每次调用都创建新实例
+#### AstrAgentContext 每次调用都创建新实例
 
 每次工具调用时，框架都会创建新的 `AstrAgentContext` 实例，包装当前的 `event`：
 
@@ -498,7 +605,7 @@ agent_context = AstrAgentContext(
 - 主 Agent（`AstrMainAgent`）中
 - 第三方 Agent（`ThirdPartyAgent`）中
 
-##### Context 是单例的
+#### Context 是单例的
 
 `Context` 在 AstrBot 启动时创建一次，所有插件共享：
 
@@ -513,11 +620,11 @@ self.star_context = Context(
 )
 ```
 
-##### extra 是预留给开发者的扩展字段
+#### extra 是预留给开发者的扩展字段
 
 `extra` 默认为空字典 `{}`，框架目前没有使用它。它的设计意图是让框架内部或插件在需要时可以存储额外信息，但实际中未被框架使用。
 
-##### 生命周期总结
+#### 生命周期总结
 
 | 类 | 创建时机 | 生命周期 |
 |---|---------|---------|
@@ -534,7 +641,7 @@ AstrAgentContext                  ← 每次工具调用创建
 Context                          ← 全局单例
 ```
 
-#### 在 Tool 的 call 方法中访问
+### 在 Tool 的 call 方法中访问
 
 ContextWrapper 和 AstrAgentContext 都有一个名为 `context` 的字段，容易混淆。完整的访问链路如下：
 
@@ -567,48 +674,72 @@ async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> Too
     ...
 ```
 
-#### 泛型参数 FunctionTool[AstrAgentContext] 是否必要？
+## 八、两种方式的对比与选择
 
-- **不是绝对必要，但强烈推荐使用**
-- 泛型参数会影响 `call` 方法中 `context` 参数的类型提示
-- 如果不指定，IDE 无法正确推断 `context.context` 的类型
-- 目前 AstrBot 只支持 `AstrAgentContext` 作为泛型参数
+### @llm_tool 方式与 ContextWrapper 的关系
 
-### 方式三：手动创建 FunctionTool
+使用 `@llm_tool` 装饰器注册的工具，**不需要直接操作 `ContextWrapper`**。
 
-如果你有特殊需求，可以手动创建 `FunctionTool` 并注册。
+框架会自动从 `ContextWrapper` 中提取 `event`，并直接传给 `handler`（文件：astrbot/core/provider/func_tool_manager.py#L252-L255）：
 
 ```python
-from astrbot.api import FunctionTool
-from astrbot.api.event import AstrMessageEvent
-
-class MyPlugin(Star):
-    def __init__(self, context):
-        super().__init__(context)
-        
-        weather_tool = FunctionTool(
-            name="get_weather",
-            description="获取指定城市的天气信息",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "city": {"type": "string", "description": "城市名称"},
-                    "date": {"type": "string", "description": "日期（可选）"}
-                },
-                "required": ["city"]
-            },
-            handler=self._get_weather_handler
-        )
-        
-        # 注册到框架
-        self.context.add_llm_tools(weather_tool)
-    
-    async def _get_weather_handler(self, event: AstrMessageEvent, city: str, date: str = "") -> str:
-        weather = await fetch_weather(city, date)
-        return f"{city}今天{weather}"
+# @filter.llm_tool decorated tools have a handler attribute, which is the actual callable.
+if self._wrapped.handler is not None:
+    event = context.context.event  # 框架从 ContextWrapper 中提取 event
+    result = self._wrapped.handler(event, **kwargs)  # 只传入 event 和业务参数
 ```
 
-## 六、handler 的注册与调用
+因此，`@llm_tool` 方式不需要 `ContextWrapper`，因为：
+1. `event` 已通过方法参数传入
+   - 框架自动从 `ContextWrapper[AstrAgentContext]` 中提取 `event`
+   - 直接传给 handler 的第一个参数
+2. `Context` 在 Star 初始化时就有了
+   - 通过 `self.context` 访问（Star 基类的属性）
+   - 不需要从 `ContextWrapper` 中获取
+3. `ContextWrapper` 是框架内部使用的
+   - 用于维护对话历史、超时控制等
+   - 插件开发者无需直接操作
+
+### @llm_tool 方式如何获取所需信息
+
+| 信息 | 获取方式 |
+|------|---------|
+| `event`（AstrMessageEvent） | handler 的第一个参数，框架自动传入 |
+| `context`（Context） | `self.context`（Star 基类的属性，初始化时已存在） |
+| 对话历史 | 不需要（框架内部维护） |
+| 工具调用超时 | 不需要（使用默认值） |
+
+### 两种方式的对比
+
+| 方面 | `@llm_tool` 装饰器（推荐） | 继承 `FunctionTool` |
+|------|-------------------|---------------------|
+| 代码复杂度 | 简洁，无需处理 ContextWrapper | 复杂，需要理解 ContextWrapper 层级 |
+| handler 第一个参数 | `event`（AstrMessageEvent） | `context`（ContextWrapper[AstrAgentContext]） |
+| 获取 Context | `self.context`（Star 基类） | `context.context.context`（从 ContextWrapper 中提取） |
+| 获取 event | 直接通过参数 | `context.context.event` |
+| 支持 required 字段 | ❌ 不支持 | ✅ 支持 |
+| 获取对话历史 | 不需要 | `context.messages` |
+| 获取超时设置 | 不需要 | `context.tool_call_timeout` |
+
+### 什么时候用 @llm_tool？（绝大多数场景）
+
+优先使用 `@llm_tool` 装饰器，因为：
+- 代码更简洁
+- 不需要处理 `ContextWrapper` 的复杂性
+- 直接通过参数获取 `event`
+- 通过 `self.context` 获取 `Context`
+
+### 什么时候必须用 FunctionTool？
+
+只有当你需要以下功能时，才使用继承 `FunctionTool` 的方式：
+- **需要 `required` 字段限定必填参数**
+- **需要复杂参数结构**（嵌套对象、数组、枚举等）
+- 需要访问对话历史（`context.messages`）
+- 需要控制工具调用超时
+
+否则，`@llm_tool` 已经足够用了，而且更简洁。
+
+## 九、handler 的注册与调用
 
 ### 注册方式
 
@@ -652,7 +783,7 @@ ToolLoopAgentRunner 开始执行
 
 文件：astrbot/core/agent/runners/tool_loop_agent_runner.py#L109
 
-## 七、局限性
+## 十、局限性
 
 ### @llm_tool 不支持 required 字段
 
@@ -747,7 +878,70 @@ class GetUserInfoTool(FunctionTool[AstrAgentContext]):
 | 需要 required 限定必填参数 | 继承 FunctionTool 类 |
 | 需要复杂参数结构 | 继承 FunctionTool 类 |
 
-## 八、相关 API 和装饰器
+### @llm_tool 的 handler 参数安全写法
+
+由于 `@llm_tool` 不生成 `required` 字段，LLM 可能不传某些参数。如果 handler 中有**无默认值的命名参数**，LLM 不传时会报 `TypeError`。
+
+**不安全的写法**
+
+```python
+@llm_tool(name="get_weather")
+async def get_weather(self, event: AstrMessageEvent, city: str, date: str = "") -> str:
+    # city 无默认值，如果 LLM 不传 city，会报 TypeError
+    # date 有默认值，LLM 不传时安全
+```
+
+**安全写法一：用 `**kwargs` + `.get()` 兜底（推荐）**
+
+```python
+@llm_tool(name="get_weather")
+async def get_weather(self, event: AstrMessageEvent, **kwargs) -> str:
+    """获取指定城市的天气信息
+    
+    Args:
+        city(str): 城市名称（必填）
+        date(str): 日期（可选）
+    """
+    city = kwargs.get("city", "北京")  # 兜底默认值
+    date = kwargs.get("date", "今天")
+    weather = await fetch_weather(city, date)
+    return f"{city}{date}{weather}"
+```
+
+**安全写法二：必填项用命名参数 + 可选项用 `**kwargs`**
+
+```python
+@llm_tool(name="get_weather")
+async def get_weather(self, event: AstrMessageEvent, city: str, **kwargs) -> str:
+    """获取指定城市的天气信息
+    
+    Args:
+        city(str): 城市名称（必填）
+        date(str): 日期（可选）
+    """
+    date = kwargs.get("date", "今天")
+    weather = await fetch_weather(city, date)
+    return f"{city}{date}{weather}"
+```
+
+这种写法下，`city` 是命名参数（LLM 必须传），`date` 通过 `**kwargs` 接收（LLM 可传可不传）。但注意：**这只是 Python 层面的强制**，JSON Schema 仍然没有 `required` 字段，LLM 不知道 `city` 是必填的。要真正强制，还是得用 `FunctionTool` 继承方式。
+
+**重要：LLM 传参不看顺序，按名称匹配**。从 `func_tool_manager.py#L255` 可以看到，handler 调用时用的是 `handler(event, **kwargs)`，`**kwargs` 是 LLM 传来的命名参数字典，Python 按参数名匹配，与 `properties` 中的定义顺序无关。
+
+### FunctionTool 继承时 `call` 方法的 `**kwargs`
+
+继承 `FunctionTool` 实现 `call` 方法时，**必须用 `**kwargs` 接收业务参数**：
+
+```python
+async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    city = kwargs.get("city", "北京")
+    date = kwargs.get("date", "今天")
+    ...
+```
+
+如果定义成 `call(self, context, city, date)`，当 LLM 不传 `date`（即使 JSON Schema 声明了 `required`，LLM 也可能忽略）时，会报 `TypeError`。用 `**kwargs` + `.get()` 是最安全的写法。
+
+## 十一、相关 API 和装饰器
 
 ### API 导出
 
@@ -762,25 +956,108 @@ class GetUserInfoTool(FunctionTool[AstrAgentContext]):
 
 ### 相关装饰器
 
-在 `api.event.filter` 中还有：
+在 `api.event.filter` 中还有与 Tool 相关的装饰器：
 
 | 装饰器 | 说明 |
 |--------|------|
-| `@llm_tool(name="xxx")` | 注册 LLM 工具 |
-| `@on_using_llm_tool()` | 监听工具使用事件 |
+| `@llm_tool(name="xxx")` | 注册 LLM 工具（用于 `@llm_tool` 方式） |
+| `@on_using_llm_tool()` | 监听工具被使用的事件 |
 | `@on_llm_tool_respond()` | 监听工具响应事件 |
 
-## 九、动态控制工具
+## 十二、动态控制工具
+
+### 两种工具注册级别
+
+在讲动态控制之前，需要理解两个级别的区别：
+
+**全局注册**（`self.context.add_llm_tools()`）：
+- 工具被添加到 `llm_tools.func_list`（全局工具列表）
+- 所有 LLM 请求都会自动携带这些工具
+- 适合所有场景都需要的通用工具
+
+**请求级注入**（`req.func_tool.add_tool()`）：
+- 工具只添加到当前请求的 `req.func_tool`
+- 仅本次对话生效，下次请求不会自动携带
+- 适合按需加载的场景（如权限相关、会话相关的工具）
+
+简单说，二者的核心区别就是：
+`self.context.add_llm_tools()` 是 全局注册 ，工具被添加到 llm_tools.func_list （全局工具列表）。
+`req.func_tool.add_tool()` 是 请求级注入 ，工具只添加到当前请求的 req.func_tool （本次对话的工具集）。
+
+### 执行顺序
+
+1. build_main_agent 构建 req ，从 llm_tools.func_list （全局）合并工具到 req.func_tool （请求级）
+2. _plugin_tool_fix 根据权限过滤 req.func_tool 中的工具
+3. call_event_hook(event, EventType.OnLLMRequestEvent, req) → 调用你的 on_llm_request 处理器
+4. 之后 req.func_tool 被传给 Provider 进行 LLM 调用
+
+### 追踪源码进行验证的方法
+
+1. 追踪 on_llm_request 的调用时机，以及 req.func_tool 是怎么构建的
+2. 找 on_llm_request 被调用的地方，看 req.func_tool 是怎么构建的
+3. 看 build_main_agent 是怎么构建 req.func_tool 的
+4. 看 _plugin_tool_fix 和全局工具是怎么合并到 req.func_tool 的
+5. 看全局工具（ llm_tools.func_list ）是怎么合并到 req.func_tool 的
+6. 关键！能看到 tmgr.get_full_tool_set() 把全局工具注入了 req.func_tool 
+7. 看 get_full_tool_set 是怎么实现的
+
+### 为什么在 on_llm_request 中不能用 add_llm_tools？
+
+执行顺序问题：`on_llm_request` 回调在工具集构建完成**之后**才执行。此时 `req.func_tool` 已经从全局列表合并了工具，你再往全局列表加工具，`req.func_tool` 不会再回头合并。所以必须直接往 `req.func_tool` 里加。
+
+### 动态注入的用法
+
+当你需要**按需提供工具**时（比如根据用户权限、会话状态决定是否提供某个工具）：
+
+```python
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import ProviderRequest
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.astr_agent_context import AstrAgentContext
+
+class MyPlugin(Star):
+    def __init__(self, context):
+        super().__init__(context)
+        # 创建一次工具，复用
+        self._weather_tool = FunctionTool(
+            name="get_weather",
+            description="获取指定城市的天气信息",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "城市名称"},
+                    "date": {"type": "string", "description": "日期（可选）"}
+                },
+                "required": ["city"]
+            },
+            handler=MyPlugin._get_weather_handler  # 未绑定类方法
+        )
+
+    async def _get_weather_handler(self, event: AstrMessageEvent, **kwargs) -> str:
+        city = kwargs.get("city", "北京")
+        date = kwargs.get("date", "今天")
+        weather = "晴"
+        return f"{city}{date}{weather}"
+
+    @filter.on_llm_request()
+    async def _on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        # 根据条件动态注入
+        if some_condition:
+            if req.func_tool is None:
+                req.func_tool = ToolSet()
+            req.func_tool.add_tool(self._weather_tool)
+```
 
 ### 什么时候需要额外的 @on_llm_request？
 
 当你需要**动态控制工具**时（比如根据用户权限决定是否提供某个工具）：
 
 ```python
-from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event import AstrMessageEvent, filter
 
 class MyPlugin(Star):
-    @llm_tool(name="admin_action")
+    @filter.llm_tool(name="admin_action")
     async def admin_action(self, event: AstrMessageEvent, action: str) -> str:
         """管理员操作
         
@@ -793,8 +1070,10 @@ class MyPlugin(Star):
     async def conditional_tools(self, event, req):
         # 只有管理员才能使用管理工具
         if not is_admin(event):
-            req.tools.remove_tool("admin_action")
+            req.func_tool.remove_tool("admin_action")
 ```
+
+这种方式与动态注入互补：工具已全局注册，但在 `on_llm_request` 中根据条件**移除**。
 
 ## 总结
 
