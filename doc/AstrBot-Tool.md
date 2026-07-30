@@ -1568,6 +1568,44 @@ for tool_cls in iter_builtin_tool_classes():
 | `iter_builtin_tool_classes()` | 遍历所有已注册的工具类 |
 | `get_builtin_tool_config_rule(name)` | 获取工具的配置规则（用于 WebUI 显示启用状态） |
 
+#### 如何让 SubAgent 能使用全部内置工具
+综上所述，想让 SubAgent 能使用全部内置工具，得先 iter_builtin_tool_classes 获取所有内置工具的字典，然后遍历它时通过 get_builtin_tool 获取对应工具的实例，全部添加进 toolset，也就是需要在 `HandoffTool.call()` 中手动添加 `tools=None`。
+
+要让 SubAgent **真正调用**工具，是在 `tool_loop_agent` 的 `tools` 参数里把工具实例塞进去：
+
+```python
+toolset = ToolSet()
+
+# 插件工具
+for tool in tool_mgr.get_full_tool_set():
+    if tool.active:
+        toolset.add_tool(tool)
+
+# 内置工具
+for tool_cls in iter_builtin_tool_classes():
+    toolset.add_tool(tool_mgr.get_builtin_tool(tool_cls))
+
+# 调 SubAgent
+llm_resp = await ctx.tool_loop_agent(
+    event=event,
+    tools=toolset,  # ← 这里
+    ...
+)
+```
+
+完整的逻辑就是：
+
+```python
+toolset = ToolSet()
+
+for tool_cls in iter_builtin_tool_classes():
+    toolset.add_tool(tool_mgr.get_builtin_tool(tool_cls))
+```
+
+但说实话你不需要自己写这段——因为 handoff 执行时 `_get_runtime_computer_tools()` 已经把沙箱 8 件套加进去了，`get_full_tool_set()` 也加了插件工具。你真正缺的是 **Neo Skill 工具**（`astrbot_run_browser_skill`、`astrbot_create_skill_payload` 那堆）和 **Skill prompt 文本**。
+
+Neo Skill 工具也是用 `@builtin_tool` 注册的，所以也在 `iter_builtin_tool_classes()` 的返回里。问题只是 handoff 执行时没把它们加进 toolset。你如果要自己接管的话，`iter_builtin_tool_classes` + `get_builtin_tool` 一把梭就能搞定工具这一层。
+
 ## 总结
 
 Tool 机制的核心流程：

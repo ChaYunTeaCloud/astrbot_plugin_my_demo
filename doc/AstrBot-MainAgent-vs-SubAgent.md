@@ -883,3 +883,184 @@ class SubAgentOrchestrator:
 | 8-9 | 日志 + 原子替换 handoffs 列表 |
 
 **这个类本身没问题**——它只是把 `tools` 字段存进 `Agent` 对象。真正的工具注入逻辑不在这里，而在下游 `HandoffTool` 被调用时、框架构建 SubAgent 的 LLM 请求那一步。那就是 #8121 想修的。
+
+## AstrBot 是根据什么把 Persona 交给对应的 SubAgent 的？
+
+通过**配置文件**中的 `persona_id` 字段匹配。
+
+### 配置结构
+
+在 AstrBot 配置文件中：
+
+```yaml
+subagent_orchestrator:
+  main_enable: true
+  agents:
+    - name: weather          # SubAgent 名称
+      persona_id: weather     # ← 关联的 Persona ID
+      enabled: true
+      tools: null             # null = 使用 Persona 的 tools
+      public_description: "查询天气"
+    - name: translator
+      persona_id: translator  # ← 另一个 Persona
+      enabled: true
+```
+
+### 匹配流程
+
+```
+配置文件                          PersonaManager (内存)
+┌──────────────────────┐        ┌──────────────────────┐
+│ agents:               │        │ personas_v3:         │
+│   - name: weather     │        │   - name: weather    │
+│     persona_id: weather│ ─────→ │     prompt: "..."    │
+│                       │  查询   │     tools: [...]     │
+└──────────────────────┘        │     skills: [...]    │
+                                └──────────────────────┘
+```
+
+### 代码实现
+
+[subagent_orchestrator.py#L48-L51](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L48-L51)
+
+```python
+# 从配置读取 persona_id
+persona_id = item.get("persona_id")
+if persona_id is not None:
+    persona_id = str(persona_id).strip() or None
+
+# 查询 PersonaManager 中对应的 Persona
+persona_data = self._persona_mgr.get_persona_v3_by_id(persona_id)
+```
+
+[persona_mgr.py#L47-L61](../.venv/Lib/site-packages/astrbot/core/persona_mgr.py#L47-L61)
+
+```python
+def get_persona_v3_by_id(self, persona_id):
+    if not persona_id:
+        return None
+    if persona_id == "default":
+        return DEFAULT_PERSONALITY
+    # 按 name 字段匹配
+    return next(
+        (p for p in self.personas_v3 if p["name"] == persona_id),
+        None
+    )
+```
+
+### 优先级
+
+| `persona_id` 值 | 行为 |
+|----------------|------|
+| `None` 或空字符串 | 不关联 Persona，使用配置中的 `system_prompt` 和 `tools` |
+| `"default"` | 使用内置默认 Persona |
+| 具体名称（如 `"weather"`） | 从 `personas_v3` 列表中按 `name` 查找 |
+| 找不到匹配 | 警告日志，回退到配置中的 `system_prompt` |
+
+### 数据覆盖规则
+
+[subagent_orchestrator.py#L66-L75](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L66-L75)
+
+```python
+if persona_data:
+    # Persona 数据覆盖配置中的对应字段
+    instructions = persona_data.get("prompt")      # 覆盖 system_prompt
+    tools = persona_data.get("tools")              # 覆盖 tools
+    begin_dialogs = persona_data.get("_begin_dialogs_processed")  # 新增
+```
+
+**简单说：配置中的 `persona_id` 是"外键"，指向 Persona 表中的一条记录。**
+
+### 细节补充
+
+1. **`personas_v3` 是列表不是字典**，所以 `get_persona_v3_by_id` 每次都 `next()` 线性扫描，Persona 多了会慢。
+
+2. **`tools` 字段是 `persona_data.get("tools")` 原样返回的**，如果 Persona 里 `tools` 是 `None`（表示"不限制，用全部"），那 SubAgent 拿到也是 `None`。但框架在 handoff 执行时没有把 MainAgent 的全局工具全量透传——这就是 SubAgent 拿不到 Skill 的原因。Persona 的 `tools` 字段只是一个"白名单标记"，真正注入工具的逻辑在 handoff 执行层，而那层漏了。
+
+3. 简单说完整链条：我们编写的所有人格设定，都会在AstrBot初始化的时候缓存进 personas_v3 这个列表，【get_persona_v3_by_id】方法返回一个persona_data，然后AstrBot根据这个persona_data 动态创建 SubAgent ，构建 Handoff 方法缓存进handoffs这个列表里。流程图：
+```
+AstrBot 启动
+  ↓
+PersonaManager.__init__ → 从 SQLite 加载所有人格 → 缓存进 personas_v3（列表）
+  ↓
+SubAgentOrchestrator.reload_from_config()
+  ↓
+遍历配置中每个 agent：
+  ├─ persona_id → get_persona_v3_by_id() → 从 personas_v3 线性扫描匹配
+  ├─ 有匹配 → persona_data 覆盖 instructions / tools / begin_dialogs
+  ├─ 无匹配 → 用配置里内联的 system_prompt 和 tools
+  └─ 组装 Agent → 包进 HandoffTool → 加入 self.handoffs
+```
+几个关键点：
+- `reload_from_config` **不是只在启动时调一次**，配置变更时也会触发，每次都是**原子替换** `self.handoffs`（整个列表一把换掉，不是追加）。
+- Persona 的 `tools` 此时只是一个**标签**（`None` / `[]` / `["tool_a"]`），存进 `Agent.tools` 后就完事了。真正按这个标签筛选并注入工具的代码在 handoff 执行层——那层目前漏掉了全局 Skill 工具的透传。
+- `personas_v3` 是列表不是字典，`get_persona_v3_by_id` 每次 O(n) 扫描，Persona 多了性能会受影响，不过一般没那么多就是了。       
+综上所述，无法通过handoff溯源到它的人格设定，只能通过配置文件中的 `persona_id` 来关联。
+可以看一下 `HandoffTool` 和 `Agent` 分别存了什么：
+**Agent**：`name`、`instructions`、`tools`、`run_hooks`、`begin_dialogs`
+**HandoffTool**：`agent`、`tool_description`、`provider_id`
+没有一个字段存 `persona_id`。`reload_from_config` 里 `persona_id` 只是个**临时变量**——查完 `personas_v3` 拿到数据、覆盖到 `instructions`/`tools`/`begin_dialogs` 之后，`persona_id` 就丢掉了。
+
+所以 `handoffs` 列表里的每个 `HandoffTool`，你只能看到它「最终的」人设文本和工具配置，但无法反向追溯它是从哪个 Persona 来的。类似于只存了渲染后的 HTML，扔掉了原始的模板引用。
+
+从 AstrBot配置文件的示例：
+```yaml
+subagent_orchestrator:
+  main_enable: true
+  agents:
+    - name: weather          # SubAgent 名称
+      persona_id: weather     # ← 关联的 Persona ID
+      enabled: true
+      tools: null             # null = 使用 Persona 的 tools
+      public_description: "查询天气"
+    - name: translator
+      persona_id: translator  # ← 另一个 Persona
+      enabled: true
+```
+可以看出，agents 里面有很多项，每一项都是你在web UI 里面创建的SubAgent，每个 SubAgent 对应一个 persona_id。
+所以其实AstrBot是通过agents里面的 name 来判断是哪个 SubAgent，通过persona_id来判断这个SubAgent绑定的是哪个人格设定。
+然后根据 persona_id 用【get_persona_v3_by_id】获取到对应的persona_data。
+然后，AstrBot根据这个persona_data动态创建名为 name 的Agent对象，并进一步处理为 handoff 实例对象并缓存进 handoffs 列表
+一张图总结：
+```
+agents:
+  - name: test_sub_agent   ← SubAgent 标识
+    persona_id: test        ← 人格设定标识
+        │
+        ▼
+get_persona_v3_by_id("test")
+        │
+        ▼
+persona_data { prompt, tools, begin_dialogs }
+        │
+        ▼
+Agent(name="test_sub_agent", instructions=prompt, tools=tools)
+        │
+        ▼
+HandoffTool(agent, tool_description, provider_id)
+        │
+        ▼
+self.handoffs = [HandoffTool, ...]
+```
+`name` 是 SubAgent 的"身份证"，`persona_id` 是它绑定的"人设卡"。两条线独立，通过配置文件的 `persona_id` 字段关联起来。
+注意：**把 Agent 包成 HandoffTool 这一步其实没问题——它就是把 `Agent` 对象原样存进去了：**
+
+```python
+handoff = HandoffTool(
+    agent=agent,                        # Agent 整个塞进去
+    tool_description=public_description or None,
+)
+```
+这一步没做任何过滤或加工。
+
+当 MainAgent 调用 `transfer_to_test_sub_agent`，`HandoffTool.call()` 被执行时，框架构建 SubAgent 的 LLM 请求，这时候它要根据 `Agent.tools` 来决定给 SubAgent 注入哪些工具。`tools=None` 按设计应该等于「全部工具」，但实际注入时没有把全局 Skill 工具（`astrbot_run_browser_skill` 等）带过去，只给了沙箱基础 8 件套。
+
+所以不是「包成 HandoffTool 时做了不符合预期的行为」，而是「HandoffTool 被执行时，工具注入那一步漏了全局 Skill」。
+
+简单说就是：AstrBot根据这个persona_data动态创建名为 name 的Agent对象，并进一步处理为 handoff 实例对象，到这里都是根据人格设定文件完整复制。而我遇到的BUG或者说不符合我个人预期的问题，本质上是HandoffTool 被执行时，AstrBot对Handoff进行了过滤和加工。主要是注入工具那一步。
+
+配置 + Persona → Agent(name, instructions, tools=None)  ✅ 没问题，完整复制
+Agent → HandoffTool(agent)                               ✅ 没问题，原样封装
+HandoffTool.call() → 构建 SubAgent LLM 请求 → 注入工具    ❌ 这里过滤掉了全局 Skill
+
+
