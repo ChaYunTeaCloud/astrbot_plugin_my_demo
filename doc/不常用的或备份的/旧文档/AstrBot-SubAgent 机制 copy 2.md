@@ -1,10 +1,10 @@
 # AstrBot-SubAgent（子智能体）机制
 
-## 一、核心概念与机制
+## 一、SubAgent 是什么
 
 SubAgent（子智能体）是 AstrBot 中的**任务委派机制**。你可以配置多个子 Agent，每个子 Agent 有独立的人格设定（system prompt）和工具集。当主 Agent（LLM）判断某个任务适合由特定子 Agent 处理时，会通过调用 `HandoffTool`（转接工具）把任务转交给子 Agent。
 
-**核心思想：主 Agent 是决策者，SubAgent 是执行者。**
+核心思想：**主 Agent 是决策者，SubAgent 是执行者。**
 
 ```
 用户请求
@@ -33,11 +33,7 @@ SubAgent（子智能体）是 AstrBot 中的**任务委派机制**。你可以�
 
 ### HandoffTool vs 普通 FunctionTool 工作流程对比
 
-这是理解 SubAgent 机制的核心。普通 FunctionTool 和 HandoffTool 在执行路径、处理逻辑上有本质区别。
-
 #### 普通 FunctionTool 工作流程
-
-普通工具执行的是一个具体的功能（如查天气），流程相对简单。
 
 ```
 主 Agent (LLM)
@@ -71,8 +67,6 @@ SubAgent（子智能体）是 AstrBot 中的**任务委派机制**。你可以�
 ```
 
 #### HandoffTool 工作流程
-
-HandoffTool 触发的是一个新的、独立的 Agent 对话循环，功能更强大。
 
 ```
 主 Agent (LLM)
@@ -112,17 +106,13 @@ HandoffTool 触发的是一个新的、独立的 Agent 对话循环，功能更�
 |------|-------------------|-------------|
 | 执行分支 | `_execute_local` | `_execute_handoff` |
 | 执行方式 | 调用 handler / call() / run() | 启动新的 `tool_loop_agent` 对话 |
-| handler | 必须有（直接执行的函数） | 无（装饰器注册时绑定的 handler 仅用于标识） |
+| handler | 必须有 | 无（装饰器注册时绑定的 handler 仅用于标识） |
 | call() | 可以被重写来实现功能 | 不会被调用（执行器跳过了它） |
 | 结果类型 | 字符串或 MessageEventResult | CallToolResult（子 Agent 的完成文本） |
 | 执行耗时 | 通常毫秒级 | 可能数秒到数分钟 |
 | 能否调用其他工具 | 不能直接调用 | 可以（通过子 Agent 的工具集） |
 
-#### 工具路由分发模式（深入剖析）
-
-AstrBot 的所有工具（普通工具、转接工具、MCP 工具、后台任务）都统一由 `FunctionToolExecutor.execute()` 方法进行路由分发。这是一个典型的**责任链/路由分发模式**。
-
-**1. FunctionTool 最终会走到 `_execute_handoff` 吗？**
+#### FunctionTool 最终会走到 _execute_handoff 吗？
 
 **不会。** 工具执行器的路由逻辑是互斥的 `if/elif/else` 结构（文件：astrbot/core/astr_agent_tool_exec.py#L129-184）：
 
@@ -160,7 +150,9 @@ else:
 
 普通 FunctionTool 永远走 `_execute_local`，永远不会走到 `_execute_handoff`。HandoffTool 虽然继承自 FunctionTool，但因为 `isinstance` 判断在最前面，它会被优先识别并路由到 `_execute_handoff`，不会落入 `else` 分支。
 
-**2. 完整的路由流程图**
+#### 工具路由分发模式
+
+AstrBot 的所有工具（普通工具、转接工具、MCP 工具、后台任务）都统一由 `FunctionToolExecutor.execute()` 方法（文件：astrbot/core/astr_agent_tool_exec.py#L129）进行路由分发。这是一个典型的**责任链模式**：
 
 ```
 FunctionToolExecutor.execute(tool, run_context, **tool_args)  # L129
@@ -179,22 +171,26 @@ FunctionToolExecutor.execute(tool, run_context, **tool_args)  # L129
         └── 根据 tool.handler / tool.call() / tool.run() 选择执行方式
 ```
 
-**3. 关键设计点**
+这是一个典型的 路由分发模式 ：
 
-- **统一入口**：所有工具类型的执行都通过 `execute()` 方法，不存在旁路。
-- **类型判断优先**：`HandoffTool` 和 `MCPTool` 作为 `FunctionTool` 的子类，通过 `isinstance` 判断在最前面被优先拦截，不会落入 `else` 分支。
-- **互斥分支**：使用 `if/elif/else` 结构，每个工具类型只能走一条执行路径。
-- **子类隔离**：`HandoffTool.call()` 和 `MCPTool.call()` 在执行器中永远不会被调用，它们的执行逻辑完全由独立的 `_execute_*` 方法处理。
+- 所有工具类型的判断都集中在 execute() 方法中
+- 每个工具类型对应一个独立的 _execute_* 方法
+- HandoffTool 和 MCPTool 虽然继承自 FunctionTool ，但它们的 call() 方法在执行器中 永远不会被调用
+- 普通 FunctionTool 的 handler / call() / run() 只在 _execute_local 中生效
+
+关键设计点：
+
+1. **统一入口**：所有工具类型的执行都通过 `execute()` 方法，不存在旁路
+2. **类型判断优先**：`HandoffTool` 和 `MCPTool` 作为 `FunctionTool` 的子类，通过 `isinstance` 判断在最前面被优先拦截，不会落入 `else` 分支
+3. **互斥分支**：使用 `if/elif/else` 结构，每个工具类型只能走一条执行路径
+4. **子类隔离**：`HandoffTool.call()` 和 `MCPTool.call()` 在执行器中永远不会被调用，它们的执行逻辑完全由独立的 `_execute_*` 方法处理
+5. **可扩展性**：新增工具类型只需在 `execute()` 中添加新的 `isinstance` 判断和对应的 `_execute_*` 方法
 
 这意味着 HandoffTool 与 FunctionTool 并非"没有关联"，而是**继承关系 + 路由隔离**的设计：HandoffTool 继承了 FunctionTool 的所有属性（name、description、parameters、handler 等），但在执行时被路由到独立的分支，跳过了 FunctionTool 的 handler/call 机制。
 
----
+## 二、核心类
 
-## 二、核心类与注册
-
-### 2.1 核心类定义
-
-#### Agent（智能体定义）
+### 2.1 Agent（智能体定义）
 
 **文件**：astrbot/core/agent/agent.py
 
@@ -216,7 +212,7 @@ class Agent(Generic[TContext]):
 | `run_hooks` | 运行时钩子 |
 | `begin_dialogs` | 预设的对话历史（Persona 中的 `_begin_dialogs_processed`） |
 
-#### HandoffTool（转接工具）
+### 2.2 HandoffTool（转接工具）
 
 **文件**：astrbot/core/agent/handoff.py
 
@@ -260,7 +256,7 @@ HandoffTool 继承 FunctionTool，是一种特殊的工具：
 }
 ```
 
-#### SubAgentOrchestrator（子智能体编排器）
+### 2.3 SubAgentOrchestrator（子智能体编排器）
 
 **文件**：astrbot/core/subagent_orchestrator.py
 
@@ -281,13 +277,13 @@ class SubAgentOrchestrator:
         self.handoffs = handoffs
 ```
 
-### 2.2 注册方式
+## 三、两种注册方式
 
-SubAgent 支持两种注册方式：
+### 3.1 配置文件注册（推荐）
 
-**1. 配置文件注册（推荐用于生产环境）**
+在 AstrBot 配置文件中定义子 Agent，通过 WebUI 或配置文件管理。
 
-在 AstrBot 配置文件中定义，通过 WebUI 管理。
+配置示例（`subagent_orchestrator` 相关配置）：
 
 ```yaml
 subagent_orchestrator:
@@ -319,9 +315,9 @@ subagent_orchestrator:
 | `tools` | 否 | 指定子 Agent 可用的工具列表，`None` 表示继承所有工具 |
 | `provider_id` | 否 | 使用指定的 Provider，默认使用当前会话的 Provider |
 
-**2. 装饰器注册（用于插件内置 Agent）**
+### 3.2 装饰器注册（代码方式）
 
-使用 `@agent` 装饰器在插件中注册，直接加到全局工具列表。
+使用 `@agent` 装饰器在插件中注册子 Agent。
 
 ```python
 from astrbot.api import agent
@@ -353,20 +349,18 @@ def register_agent(name, instruction, tools=None, run_hooks=None):
     return decorator
 ```
 
-**注意**：装饰器注册的 HandoffTool 是**直接加到全局工具列表**的，而配置文件注册的 HandoffTool 是在 `astr_main_agent.py#L625-626` 中动态注入到请求工具集的。
+注意：装饰器注册的 HandoffTool 是**直接加到全局工具列表**的，而配置文件注册的 HandoffTool 是在 `astr_main_agent.py#L625-626` 中动态注入到请求工具集的。
 
----
+## 四、HandoffTool 的执行机制
 
-## 三、执行机制与动态管理
+`HandoffTool` 的 `call` 方法没有被重写 ，它走的是完全不同的执行路径：
+`HandoffTool` 不是通过 `call()` 方法执行的。工具执行器在 `astrbot/core/astr_agent_tool_exec.py#L140` 通过 `isinstance(tool, HandoffTool)` 判断后，直接路由到 `_execute_handoff` 分支，跳过了 `call() / handler` 机制。
 
-### 3.1 HandoffTool 执行机制
+### 4.1 执行入口
 
-`HandoffTool` 不是通过 `call()` 方法执行的。工具执行器通过 `isinstance` 判断后，直接路由到 `_execute_handoff` 分支，跳过了 `call() / handler` 机制。
-
-#### 执行入口
+在工具执行器 astrbot/core/astr_agent_tool_exec.py#L140-150 中，通过 `isinstance` 判断路由：
 
 ```python
-# astrbot/core/astr_agent_tool_exec.py#L140-150
 if isinstance(tool, HandoffTool):
     is_bg = tool_args.pop("background_task", False)
     if is_bg:
@@ -378,7 +372,7 @@ if isinstance(tool, HandoffTool):
     return
 ```
 
-#### 执行流程（_execute_handoff）
+### 4.2 执行流程（_execute_handoff）
 
 ```
 1. 准备参数
@@ -406,7 +400,18 @@ if isinstance(tool, HandoffTool):
    └── yield CallToolResult（包含子 Agent 的完成文本）
 ```
 
-#### 后台任务模式
+### 4.3 与普通 FunctionTool 执行的区别
+
+| 维度 | 普通 FunctionTool | HandoffTool |
+|------|-------------------|-------------|
+| 执行分支 | `_execute_local` | `_execute_handoff` |
+| 执行方式 | 直接调用 handler | 启动新的 `tool_loop_agent` 对话 |
+| handler | 有（直接执行的函数） | 无（装饰器注册时绑定的 handler 仅用于标识） |
+| 结果返回 | 直接返回字符串 | 子 Agent 完成后返回 CallToolResult |
+| 工具隔离 | 使用主 Agent 的工具 | 使用子 Agent 指定的工具（排除 HandoffTool） |
+| 循环防护 | 无 | 排除其他 HandoffTool，防止无限循环转接 |
+
+### 4.4 后台任务模式
 
 当 `background_task=True` 时，走 `_execute_handoff_background` 分支：
 
@@ -417,36 +422,40 @@ if isinstance(tool, HandoffTool):
 4. 主 Agent 收到通知后，把结果告诉用户
 ```
 
-### 3.2 动态管理 SubAgent
+## 五、动态管理 SubAgent
 
-#### 访问已存在的 SubAgent 属性
+### 5.1 访问已存在的 SubAgent 属性
 
 `SubAgentOrchestrator.handoffs` 中存储的是 `HandoffTool` 对象列表。每个 `HandoffTool` 持有一个 `agent` 属性（`Agent` 实例），可以通过它访问 SubAgent 的完整配置：
 
 ```python
-@filter.command("list_agents")
-async def list_agents(self, event):
-    orchestrator = self.context.subagent_orchestrator
-    handoffs = orchestrator.handoffs
-    if not handoffs:
-        yield event.plain_result("已注册的 SubAgent: 无")
-        return
+class MyPlugin(Star):
+    def __init__(self, context):
+        super().__init__(context)
 
-    result = []
-    for h in handoffs:
-        agent = h.agent  # Agent 实例
-        result.append({
-            "handoff_name": h.name,           # transfer_to_{agent_name}
-            "agent_name": agent.name,         # Agent 名称（如 weather）
-            "instructions": agent.instructions,  # 系统提示词
-            "tools": agent.tools,             # 可用工具列表
-            "has_begin_dialogs": bool(agent.begin_dialogs),  # 是否有预设对话
-            "provider_id": h.provider_id,    # 专用 Provider ID
-        })
-    yield event.plain_result(f"已注册的 SubAgent: {result}")
+    @filter.command("list_agents")
+    async def list_agents(self, event):
+        orchestrator = self.context.subagent_orchestrator
+        handoffs = orchestrator.handoffs
+        if not handoffs:
+            yield event.plain_result("已注册的 SubAgent: 无")
+            return
+
+        result = []
+        for h in handoffs:
+            agent = h.agent  # Agent 实例
+            result.append({
+                "handoff_name": h.name,           # transfer_to_{agent_name}
+                "agent_name": agent.name,         # Agent 名称（如 weather）
+                "instructions": agent.instructions,  # 系统提示词
+                "tools": agent.tools,             # 可用工具列表
+                "has_begin_dialogs": bool(agent.begin_dialogs),  # 是否有预设对话
+                "provider_id": h.provider_id,    # 专用 Provider ID
+            })
+        yield event.plain_result(f"已注册的 SubAgent: {result}")
 ```
 
-**Agent 类的属性说明**：
+Agent 类的属性说明（文件：astrbot/core/agent/agent.py#L9-16）：
 
 | 属性 | 类型 | 说明 |
 |------|------|------|
@@ -456,7 +465,7 @@ async def list_agents(self, event):
 | `run_hooks` | `BaseAgentRunHooks \| None` | 运行时钩子（代码方式注册） |
 | `begin_dialogs` | `list \| None` | 预设对话历史（来自 Persona 的 `_begin_dialogs_processed`） |
 
-**HandoffTool 额外属性**：
+HandoffTool 额外属性（文件：astrbot/core/agent/handoff.py#L32-36）：
 
 | 属性 | 类型 | 说明 |
 |------|------|------|
@@ -465,7 +474,7 @@ async def list_agents(self, event):
 | `name` | `str` | HandoffTool 名称，固定为 `transfer_to_{agent.name}` |
 | `description` | `str` | 给主 LLM 看的描述，用于决定是否转接 |
 
-#### 程序化调用已存在的 SubAgent
+### 5.2 程序化调用已存在的 SubAgent
 
 SubAgent 的正常调用流程是：主 LLM 看到 HandoffTool → 决定调用 → 执行器路由到 `_execute_handoff`。但你也可以在插件中**直接调用已存在的 SubAgent**，绕过 LLM 路由。
 
@@ -487,10 +496,8 @@ async def ask_weather(self, event):
 
     agent = handoff.agent  # 获取 weather SubAgent 的 Agent 实例
 
-    # 构造 run_context，这是调用 _build_handoff_toolset 所必需的
-    from astrbot.core.astr_agent_context import AstrAgentContext, AgentContextWrapper
-    agent_context = AstrAgentContext(context=self.context, event=event)
-    run_context = AgentContextWrapper(context=agent_context, tool_call_timeout=120)
+    # 通过 context.tool_loop_agent() 直接调用 weather SubAgent
+    # 只需拿到 weather SubAgent 的Agent 实例(实例中包括人格设定、工具集、预设对话等信息），就可以直接调用它了。
 
     # 构建工具集
     # 不能直接用 agent.tools，因为：
@@ -498,7 +505,7 @@ async def ask_weather(self, event):
     # 2. tool_loop_agent() 需要的是 ToolSet 对象
     # 3. agent.tools 为 None 时表示"继承所有工具"，需要展开为实际工具列表
     # 4. 需要排除 HandoffTool，防止子 Agent 循环转接
-    # _build_handoff_toolset() 处理了上述所有逻辑，所以直接调用它是最稳妥的方式（astr_agent_tool_exec.py#L244-298）
+    # _build_handoff_toolset() 处理了上述所有逻辑或者说封装了这四件事，所以直接调用它是最稳妥的方式（astr_agent_tool_exec.py#L244-298）
     from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 
     # 构建工具集（与 _build_handoff_toolset 逻辑相同）
@@ -536,7 +543,9 @@ async def ask_weather(self, event):
     yield event.plain_result(f"天气助手回复: {llm_resp.completion_text}")
 ```
 
-#### 动态控制 SubAgent 可用性
+核心思路：`tool_loop_agent()` 就是 SubAgent 的执行引擎。你把 Agent 的配置（instructions、tools、begin_dialogs）传给它，它就会启动一个独立的 Agent 对话循环。
+
+### 5.3 动态控制 SubAgent 可用性
 
 在 `on_llm_request` 中根据条件动态调整哪些 SubAgent 对主 LLM 可见：
 
@@ -553,21 +562,55 @@ async def adjust_subagents(self, event, req):
             req.func_tool.remove_tool(handoff.name)
 ```
 
----
+### 5.4 动态添加新的 HandoffTool
 
-## 四、核心机制挑战与应对
+在 `on_llm_request` 中临时创建并注入一个新的 SubAgent：
 
-在 SubAgent 的嵌套调用（Router → A → B）场景中，`HandoffTool` 的可见性是一个核心挑战。本章将详细分析问题所在，并提供两种解决方案。
+```python
+from astrbot.core.agent.agent import Agent
+from astrbot.core.agent.handoff import HandoffTool
 
-### 4.1 问题分析
+@filter.on_llm_request()
+async def add_custom_agent(self, event, req):
+    agent = Agent(
+        name="custom",
+        instructions="你是一个自定义助手。",
+        tools=["search"],
+    )
+    handoff = HandoffTool(agent=agent, tool_description="处理自定义任务")
+    req.func_tool.add_tool(handoff)
+```
 
-**场景描述**：
-- 主 Agent (Router) 需要调用 SubAgent A。
-- SubAgent A 内部需要调用 SubAgent B。
+注意：这里创建的是**临时 SubAgent**，仅在当前请求中生效。如果需要持久化的 SubAgent，应通过 WebUI 或配置文件注册。
 
-**问题所在**：
-- WebUI 中配置的 `HandoffTool` 不会自动添加到 `llm_tools` (全局工具列表)。
-- 因此，SubAgent A 无法通过常规的 `agent.tools` 配置（如 `["transfer_to_B"]`）找到并调用 SubAgent B。
+## 六、常见问题
+
+### SubAgent 和普通工具的区别？
+
+普通工具执行一个具体功能（查天气、搜信息），SubAgent 是一个独立的 Agent，拥有自己的人格和工具集，可以进行多轮对话和复杂推理。
+
+### SubAgent 能调用其他 SubAgent 吗？
+
+可以，但框架会排除其他 HandoffTool（防止无限循环转接）。如果子 Agent 的工具列表中没有排除 HandoffTool，`_build_handoff_toolset` 会自动处理。
+
+### 如何选择配置文件注册还是装饰器注册？
+
+- **配置文件注册**：适合需要在运行时动态调整的场景（WebUI 修改后立即生效）
+- **装饰器注册**：适合插件自带的子 Agent，与插件代码绑定
+
+### SubAgent 的对话历史会被保存吗？
+
+是的，SubAgent 的对话历史会通过 `persist_agent_history` 保存，下次对话时可以恢复上下文。
+
+### 如何获取 SubAgent 的执行结果？
+
+SubAgent 执行完成后，结果会作为 `CallToolResult` 返回给主 Agent，主 Agent 可以决定是否直接回复用户或进一步处理。
+
+### Q:
+就像我之前说的，transfer_to_* 在 web UI 中无法进行配置，所以我只能在 on_llm_request() 的事件钩子中手动注入给 router，但router之下调用的其它SubAgent（或者说嵌套调用），按你说的不适用于 on_llm_request() 钩子，好像就无法进行注入了。
+
+A:
+你的担心有道理，但实际场景分两种情况：
 
 #### 场景一：Router 调用普通 SubAgent（单层）
 
@@ -588,9 +631,9 @@ weather SubAgent **不需要** `on_llm_request` 钩子，因为它的工具集�
 - `weather_agent.tools = None` → 继承所有工具，**但排除 HandoffTool** → weather 调不了 code
 - `weather_agent.tools = ["transfer_to_code_agent"]` → 走显式指定分支，用 `llm_tools.get_func()` 按名查找 → **配置文件注册的 HandoffTool 不在 `llm_tools` 里，找不到**
 
-### 4.2 传统方案：HandoffTool 注入
+#### 解决方案
 
-为了解决上述问题，一个直接的思路是在 `on_llm_request` 钩子中，手动将所有 `HandoffTool` 对象注入到每个 SubAgent 的 `agent.tools` 属性中。
+在 `on_llm_request` 中做一次性的全局设置，把 HandoffTool 对象直接注入到每个 SubAgent 的 `agent.tools` 里（用对象而不是名字）：
 
 ```python
 @filter.on_llm_request()
@@ -606,9 +649,12 @@ async def setup_router(self, event, req):
         #    _build_handoff_toolset 支持直接传 FunctionTool 对象（不只是字符串）
         if h.agent.tools is None:
             h.agent.tools = [tool for tool in req.func_tool.tools]
+
+    # 3. 如果 Router 的 tools 还是 None，也需要处理
+    #    （上面的循环已经覆盖了）
 ```
 
-**关键点**：`_build_handoff_toolset` 的显式指定分支（astrbot/core/astr_agent_tool_exec.py#L296）支持传入 `FunctionTool` 对象直接加入工具集，不需要通过名字查找：
+关键点：`_build_handoff_toolset` 的显式指定分支（astrbot/core/astr_agent_tool_exec.py#L296）支持传入 `FunctionTool` 对象直接加入工具集，不需要通过名字查找：
 
 ```python
 elif isinstance(tool_name_or_obj, FunctionTool):
@@ -617,168 +663,23 @@ elif isinstance(tool_name_or_obj, FunctionTool):
 
 只要你传给 `agent.tools` 的是 **HandoffTool 对象本身**（而不是字符串名），就能绕过 `llm_tools.get_func()` 的查找限制。
 
-#### 传统方案的局限
 
-这种做法存在两个明显的缺点：
+#### 总结
 
-1.  **持久化污染**
+| 层级 | 需要 on_llm_request？ | 需要特殊处理？ |
+|------|---------------------|---------------|
+| 主 Agent → Router | 是 | 注入 HandoffTool 对象 |
+| Router → SubAgent | 不需要 | 不需要（工具集在 `_execute_handoff` 内构建） |
+| SubAgent → SubAgent | 不需要 | 需要在 `on_llm_request` 中预先设置 `agent.tools` 为对象列表 |
 
-    `agent.tools` 是 `Agent` 数据类的普通字段，`Agent` 实例由 `HandoffTool.agent` 持有，`HandoffTool` 由 `SubAgentOrchestrator.handoffs` 列表持有，而 `SubAgentOrchestrator` 是单例（`context.subagent_orchestrator`）。
+如果你的场景只是 **Router → 其他 SubAgent**（单层），在 `on_llm_request` 里注入 HandoffTool 对象就足够了，不需要担心后续层级的注入问题。
 
-    执行 `h.agent.tools = [...]` 是直接修改单例持有的对象属性，修改是持久的，不会随请求结束而释放。重置时机只有两个：
-    - `reload_from_config()` 被调用（WebUI 改 SubAgent 配置后触发，会创建全新 Agent 对象）
-    - AstrBot 重启
-
-2.  **循环转接风险**
-
-    原方案 `h.agent.tools = [tool for tool in req.func_tool.tools]` 把当前请求的所有工具都赋值给了 `agent.tools`，包括其他 HandoffTool。这与 `_build_handoff_toolset` 默认（`tools=None`）会排除 HandoffTool 的设计相悖，可能造成 SubAgent 之间循环转接。
-
-### 4.3 推荐方案：自定义调用入口
-
-为了更优雅地解决问题，可以提供**两个普通的 FunctionTool** 作为统一的调用入口，而不是注入 `HandoffTool`。
-
-**核心思路**：
-- 不再让 Agent 看到 `transfer_to_xxx` 列表。
-- 而是提供 `list_sub_agents` (查询可用 Agent) 和 `call_sub_agent` (执行调用) 两个工具。
-- 所有 SubAgent 都继承这两个工具，从而实现任意层级的嵌套调用。
-
-**方案优势**：
-- **无持久化污染**：不修改 `agent.tools`。
-- **无循环风险**：统一入口，逻辑可控。
-- **天然支持嵌套**：SubAgent 可通过这两个工具互调。
-
-**实现骨架**：
-
-```python
-from astrbot.api import llm_tool
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star
-from astrbot.core.astr_agent_context import AstrAgentContext, AgentContextWrapper
-from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-from astrbot.core.agent.message import Message
-
-class SubAgentRouter(Star):
-    def __init__(self, context: Context):
-        super().__init__(context)
-
-    @filter.llm_tool(name="list_sub_agents")
-    async def list_sub_agents(self, event: AstrMessageEvent) -> str:
-        """列出所有可用的子智能体及其描述
-
-        Args:
-        """
-        orchestrator = self.context.subagent_orchestrator
-        handoffs = orchestrator.handoffs
-        if not handoffs:
-            return "当前没有可用的子智能体"
-
-        lines = []
-        for h in handoffs:
-            lines.append(f"- {h.agent.name}: {h.description}")
-        return "可用子智能体列表:\n" + "\n".join(lines)
-
-    @filter.llm_tool(name="call_sub_agent")
-    async def call_sub_agent(
-        self, event: AstrMessageEvent, agent_name: str, input: str
-    ) -> str:
-        """根据名称调用指定的子智能体处理任务
-
-        Args:
-            agent_name: 子智能体名称（可通过 list_sub_agents 查看）
-            input: 要交给子智能体处理的任务描述
-        """
-        orchestrator = self.context.subagent_orchestrator
-        handoff = None
-        for h in orchestrator.handoffs:
-            if h.agent.name == agent_name:
-                handoff = h
-                break
-
-        if not handoff:
-            return f"未找到名为 {agent_name} 的子智能体"
-
-        agent = handoff.agent
-
-        # 构造 run_context，复用框架的 _build_handoff_toolset 逻辑
-        # 它会根据 agent.tools 配置构建工具集（None=继承所有非 HandoffTool 工具）
-        agent_context = AstrAgentContext(context=self.context, event=event)
-        run_context = AgentContextWrapper(
-            context=agent_context, tool_call_timeout=120
-        )
-        toolset = FunctionToolExecutor._build_handoff_toolset(
-            run_context, agent.tools
-        )
-
-        # 准备预设对话
-        contexts = None
-        if agent.begin_dialogs:
-            contexts = []
-            for dialog in agent.begin_dialogs:
-                try:
-                    contexts.append(
-                        dialog
-                        if isinstance(dialog, Message)
-                        else Message.model_validate(dialog)
-                    )
-                except Exception:
-                    continue
-
-        # Provider 选择：优先 SubAgent 配置的 provider_id
-        prov_id = getattr(handoff, "provider_id", None)
-        if not prov_id:
-            prov_id = await self.context.get_current_chat_provider_id(
-                event.unified_msg_origin
-            )
-
-        llm_resp = await self.context.tool_loop_agent(
-            event=event,
-            chat_provider_id=prov_id,
-            prompt=input,
-            system_prompt=agent.instructions,
-            tools=toolset,
-            contexts=contexts,
-            max_steps=30,
-            tool_call_timeout=120,
-        )
-        return llm_resp.completion_text
-```
-
-#### 方案对比
-
-| 维度 | 传统方案 (HandoffTool 注入) | 推荐方案 (自定义调用入口) |
-|------|--------------------------|------------------------|
-| **持久化污染** | 有 | 无 |
-| **循环转接风险** | 有 | 无 |
-| **SubAgent 互调** | 需额外注入 | 天然支持（工具全局注册） |
-| **LLM 调用方式** | 直接调用 `transfer_to_xxx` | 先 `list_sub_agents` 再 `call_sub_agent`（多一步） |
-| **工具数量** | N 个 HandoffTool | 2 个固定工具 |
-
----
-
-## 五、常见问题
-
-### SubAgent 和普通工具的区别？
-普通工具执行一个具体功能（查天气、搜信息），SubAgent 是一个独立的 Agent，拥有自己的人格和工具集，可以进行多轮对话和复杂推理。
-
-### SubAgent 能调用其他 SubAgent 吗？
-可以，但默认框架会排除其他 HandoffTool 以防止无限循环转接。若需互调，请参考第四章节的推荐方案。
-
-### 如何选择配置文件注册还是装饰器注册？
-- **配置文件注册**：适合需要在运行时动态调整的场景（WebUI 修改后立即生效）
-- **装饰器注册**：适合插件自带的子 Agent，与插件代码绑定
-
-### SubAgent 的对话历史会被保存吗？
-是的，SubAgent 的对话历史会通过 `persist_agent_history` 保存，下次对话时可以恢复上下文。
-
-### 如何获取 SubAgent 的执行结果？
-SubAgent 执行完成后，结果会作为 `CallToolResult` 返回给主 Agent，主 Agent 可以决定是否直接回复用户或进一步处理。
-
-## 六、与相关模块的关系
+## 七、与相关模块的关系
 
 | 模块 | 关系 |
 |------|------|
-| **Tool 模块** | HandoffTool 继承自 FunctionTool，是一种特殊的工具 |
-| **Agent 模块** | Agent 类定义了子智能体的配置（instructions、tools、hooks） |
-| **Context 模块** | `Context.subagent_orchestrator` 提供访问子智能体编排器的入口 |
-| **Persona 模块** | SubAgent 可以引用 Persona 中定义的人格设定 |
-| **Provider 模块** | SubAgent 可以使用独立的 Provider（通过 `provider_id` 配置） |
+| Tool 模块 | HandoffTool 继承自 FunctionTool，是一种特殊的工具 |
+| Agent 模块 | Agent 类定义了子智能体的配置（instructions、tools、hooks） |
+| Context 模块 | `Context.subagent_orchestrator` 提供访问子智能体编排器的入口 |
+| Persona 模块 | SubAgent 可以引用 Persona 中定义的人格设定 |
+| Provider 模块 | SubAgent 可以使用独立的 Provider（通过 `provider_id` 配置） |
