@@ -1169,6 +1169,405 @@ class MyPlugin(Star):
 
 这种方式与动态注入互补：工具已全局注册，但在 `on_llm_request` 中根据条件**移除**。
 
+### 代码组织：工厂函数模式
+
+当工具逻辑复杂、不想把所有实现都塞进 `main.py` 时，可以用**工厂函数**把工具创建逻辑分离到单独的文件中。
+
+#### 核心思路
+
+在 `tools.py`（或其他模块）中定义一个函数，接收 `context`（应用级对象），返回一个 `FunctionTool` 实例。handler 所需的 `event` 由框架在调用时自动注入，不需要从闭包中捕获。
+
+**关键点：handler 的 `event` 参数由框架在执行时自动注入，工厂函数不需要接收 `event`。**
+
+#### 示例
+
+`tools.py`：
+
+```python
+from astrbot.api.event import AstrMessageEvent
+from astrbot.api.star import Context
+from astrbot.core.agent.tool import FunctionTool
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def create_list_subagent_tool(context: Context) -> FunctionTool:
+    """创建 list_subagent 工具（请求级注入专用）
+
+    Args:
+        context: 框架上下文（应用级，可安全缓存）
+
+    Returns:
+        FunctionTool 实例，可通过 req.func_tool.add_tool() 注入
+    """
+
+    async def _handler(event: AstrMessageEvent, **kwargs) -> str:
+        """列出所有可用的子智能体"""
+        logger.debug("list all sub agent")
+
+        handoffs = context.subagent_orchestrator.handoffs
+        if not handoffs:
+            yield event.plain_result("当前没有可用的子智能体")
+            return "当前没有可用的子智能体"
+
+        result = []
+        for h in handoffs:
+            agent = h.agent
+            result.append({
+                "handoff_name": h.name,
+                "agent_name": agent.name,
+                "instructions": agent.instructions,
+                "tools": agent.tools,
+                "has_begin_dialogs": bool(agent.begin_dialogs),
+                "provider_id": h.provider_id,
+            })
+
+        yield event.plain_result(f"已注册的 SubAgent: {result}")
+
+    return FunctionTool(
+        name="list_subagent",
+        description="获取已有的 SubAgent 列表",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+        handler=_handler,
+    )
+```
+
+`main.py`：
+
+```python
+from .tools import create_list_subagent_tool
+
+class SubAgentRouter(Star):
+    def __init__(self, context):
+        super().__init__(context)
+        # 创建一次，缓存复用
+        self._list_tool = create_list_subagent_tool(context)
+
+    @filter.on_llm_request()
+    async def _on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        if req.func_tool is None:
+            req.func_tool = ToolSet()
+        req.func_tool.add_tool(self._list_tool)
+```
+
+#### 为什么不需要缓存 event？
+
+handler 的签名是 `async def handler(event: AstrMessageEvent, **kwargs)`，框架在执行工具时会自动将当前请求的 `event` 作为第一个参数传入。因此：
+
+- `event` 始终是请求级的，由框架负责注入
+- 工厂函数只需接收应用级的 `context`，可安全缓存
+- 返回的 `FunctionTool` 对象可在 `__init__` 中创建一次，所有请求复用
+
+#### 不要在模块级缓存工具
+
+**问题**：修改插件代码后，AstrBot 会重新加载模块，但 Python 的模块级变量在某些情况下不会完全重置，可能导致状态混乱。
+
+**风险**：
+1. **旧对象残留**：缓存的工具对象可能引用已失效的 `context` 或其他资源
+2. **闭包捕获失效**：工厂函数的闭包捕获的是旧的 `context`，新请求可能用不到最新的配置
+3. **调试困难**：状态不一致导致的 bug 很难定位，因为看起来代码是对的，但实际运行的是旧对象
+
+**错误示例**：
+
+```python
+# tools.py - 不要这样做！
+_myToolSet = ToolSet()  # 模块级缓存，插件重载时可能不重置
+
+def create_list_subagent_tool(context: Context) -> FunctionTool:
+    # 模块级缓存，风险很大
+    if _myToolSet.get_tool("list_subagent"):
+        return _myToolSet.get_tool("list_subagent")
+
+    tool = FunctionTool(...)
+    _myToolSet.add_tool(tool)
+    return tool
+```
+
+**正确做法**：在 `Star` 实例属性中缓存，插件重载时 `__init__` 会重新执行，自然重置。
+
+```python
+# tools.py - 工厂函数只负责创建，不缓存
+def create_list_subagent_tool(context: Context) -> FunctionTool:
+    async def _handler(event: AstrMessageEvent) -> str:
+        ...
+    return FunctionTool(...)
+
+# main.py - 缓存在实例属性中
+class MyPlugin(Star):
+    def __init__(self, context):
+        super().__init__(context)
+        self._list_tool = create_list_subagent_tool(context)  # 实例级缓存，安全
+```
+
+**正确做法二**：在 `tools.py` 中创建工具管理器类，负责缓存和管理工具。
+
+`tools.py`：
+```python
+class SubAgentToolManager:
+    """管理 SubAgent 相关工具的创建与缓存"""
+
+    def __init__(self, context: Context):
+        self._context = context
+        self._toolset = ToolSet()  # 实例级缓存，不是模块级
+
+    def get_list_subagent_tool(self) -> FunctionTool:
+        """获取 list_subagent 工具（缓存复用）"""
+        tool = self._toolset.get_tool("list_subagent")
+        if tool:
+            return tool
+
+        # 创建并缓存
+        context = self._context
+
+        async def _handler(event: AstrMessageEvent) -> str:
+            handoffs = context.subagent_orchestrator.handoffs
+            result = [{"name": h.agent.name, "desc": h.description} for h in handoffs]
+            return f"已有的 SubAgent 列表: {result}"
+
+        tool = FunctionTool(
+            name="list_subagent",
+            description="获取已有的 SubAgent 列表",
+            parameters={"type": "object", "properties": {}},
+            handler=_handler,
+        )
+        self._toolset.add_tool(tool)
+        return tool
+
+    def get_call_subagent_tool(self) -> FunctionTool:
+        """获取 call_subagent 工具（缓存复用）"""
+        # 类似实现...
+        pass
+```
+然而在 main.py 中，还是建议创建一个实例级的管理器，插件重载时才可自然重置
+
+`main.py`：
+```python
+from .tools import SubAgentToolManager
+
+class SubAgentRouter(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+        # 实例级管理器，插件重载时自然重置
+        self._tool_mgr = SubAgentToolManager(context)
+
+    @filter.on_llm_request()
+    async def _on_llm_request(self, event, req):
+        # 从管理器获取工具（缓存复用）
+        tool = self._tool_mgr.get_list_subagent_tool()
+        req.func_tool.add_tool(tool)
+```
+
+
+
+#### 与全局注册的对比
+
+| 维度 | 全局注册 (`@llm_tool`) | 工厂函数 + 请求级注入 |
+|------|----------------------|---------------------|
+| 可见性 | 所有请求自动可见 | 仅在 `on_llm_request` 中显式注入的请求可见 |
+| 生命周期 | 跟随插件生命周期 | 跟随单次请求 |
+| 代码位置 | `main.py` 的 Star 类中 | 任意模块（如 `tools.py`） |
+| handler 的 event | 框架自动注入 | 框架自动注入（相同） |
+| 适用场景 | 通用工具、所有请求都需要 | 按需加载、权限相关、会话相关 |
+
+## 十三、工具管理器 FunctionToolManager
+
+`FunctionToolManager`（astrbot/core/provider/func_tool_manager.py#L287）是 AstrBot 的**核心工具管理器**，负责统一管理所有 LLM 可调用的工具。它通过 `context.get_llm_tool_manager()` 获取。
+
+### 两个独立的工具存储系统
+
+`FunctionToolManager` 维护了两个独立的工具列表，这是理解工具系统的关键：
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `func_list` | `list[FuncTool]` | 插件通过 `@llm_tool` 注册的工具 + MCP 工具。**不包含**系统内置工具 |
+| `builtin_func_list` | `dict[type[FuncTool], FuncTool]` | 系统内置工具（按类缓存，按需创建）。通过 `get_builtin_tool()` 获取 |
+
+二者的区别：
+- `func_list` 中的工具通过 `get_full_tool_set()` 获取，会被 `_PermissionGuardedTool` 包装以支持权限检查
+- `builtin_func_list` 中的工具通过 `get_builtin_tool()` 获取，按需实例化并缓存在字典中
+- **`get_full_tool_set()` 只返回 `func_list` 中的工具，不包含 `builtin_func_list`**
+
+这就是 SubAgent 工具集缺失问题的根本原因（详见 [AstrBot-SubAgent 机制.md 第五章](./AstrBot-SubAgent%20机制.md#L1102)）。
+
+### 其他属性
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `_mcp_server_runtime` | `dict[str, _MCPServerRuntime]` | MCP 服务运行时元数据，按服务名索引 |
+| `_mcp_server_runtime_view` | `MappingProxyType` | `_mcp_server_runtime` 的只读视图 |
+| `_mcp_client_dict_view` | `_MCPClientDictView` | MCP 客户端字典的只读视图 |
+| `_timeout_mismatch_warned` | `bool` | MCP 超时配置不匹配是否已警告过（防止重复警告） |
+| `_timeout_warn_lock` | `threading.Lock` | 超时警告的线程锁（防止并发警告） |
+| `_runtime_lock` | `asyncio.Lock` | MCP 运行时操作的异步锁 |
+| `_mcp_starting` | `set[str]` | 正在启动中的 MCP 服务名集合（防止重复启动） |
+
+### 核心方法
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `add_func` | `(name, func_args, desc, handler) -> None` | 注册插件工具到 `func_list`。如果同名工具已存在会先移除 |
+| `remove_func` | `(name) -> None` | 从 `func_list` 移除指定工具 |
+| `get_func` | `(name) -> FuncTool \| None` | 按名查找工具。先查 `func_list`（优先返回已激活的），再退化查 `builtin_func_list` |
+| `get_builtin_tool` | `(str \| type[FuncTool]) -> FuncTool` | 按类名或类获取内置工具。按需实例化并缓存在 `builtin_func_list` 中 |
+| `iter_builtin_tools` | `() -> list[FuncTool]` | 遍历所有已注册的内置工具 |
+| `get_full_tool_set` | `() -> ToolSet` | 获取完整工具集（仅包含 `func_list` 中的工具，不含内置工具）。工具会被 `_PermissionGuardedTool` 包装 |
+| `is_builtin_tool` | `(name: str) -> bool` | 判断工具名是否为内置工具 |
+| `spec_to_func` | `(name, func_args, desc, handler) -> FuncTool` | 将参数规范转换为 `FuncTool` 对象（内部方法） |
+| `empty` | `() -> bool` | 判断 `func_list` 是否为空 |
+
+### MCP 相关方法
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `init_mcp_clients` | `(raise_on_all_failed=False) -> MCPInitSummary` | 从 `data/mcp_server.json` 初始化 MCP 客户端 |
+
+### 使用示例
+
+```python
+# 获取工具管理器
+tool_mgr = self.context.get_llm_tool_manager()
+
+# 获取内置工具（按需实例化并缓存）
+from astrbot.core.tools.builtin_tools import ExecuteShellTool
+shell_tool = tool_mgr.get_builtin_tool(ExecuteShellTool)
+
+# 按名查找工具
+tool = tool_mgr.get_func("get_weather")
+
+# 获取完整工具集（不含内置工具）
+full_toolset = tool_mgr.get_full_tool_set()
+
+# 判断是否为内置工具
+is_builtin = tool_mgr.is_builtin_tool("astrbot_execute_shell")
+
+# 遍历所有内置工具
+all_builtin = tool_mgr.iter_builtin_tools()
+```
+
+### 与 ToolSet 的关系
+
+`FunctionToolManager` 是工具的**注册中心**，`ToolSet` 是工具的**运行时容器**。
+
+- `FunctionToolManager` 负责工具的注册、存储、查找和权限管理
+- `ToolSet` 负责工具的去重、合并和序列化（转换为 LLM API 格式）
+- `get_full_tool_set()` 将 `func_list` 中的工具包装后放入新的 `ToolSet` 返回
+- 在 `on_llm_request` 中，通过 `req.func_tool.add_tool()` 向请求级 `ToolSet` 添加工具
+
+### 内置工具的定义与导出位置
+
+所有系统内置工具定义在 `astrbot.core.tools` 包下，所有内置工具类的注册中心是 `registry.py`，通过 `@builtin_tool` 装饰器注册到 `_builtin_tool_classes_by_name` 字典中（astrbot/core/tools/registry.py#L232）。
+通过 `iter_builtin_tool_classes()` 可以获取所有已注册的工具类。
+
+注意：工具管理器里面的 `builtin_func_list` 属性是**按需创建的缓存**，不是全量列表。它的 key 是工具类，value 是已实例化的对象。只有当调用 `get_builtin_tool(SomeToolClass)` 时，才会把该工具实例化并放入缓存。
+
+#### 模块结构（5 个模块，38 个工具）
+
+| 模块路径 | 包含的工具 |
+|---------|-----------|
+| `astrbot.core.tools.computer_tools` | 基础工具（shell、python、fs、cua）、Skill 工具、浏览器工具 |
+| `astrbot.core.tools.cron_tools` | FutureTaskTool |
+| `astrbot.core.tools.knowledge_base_tools` | KnowledgeBaseQueryTool |
+| `astrbot.core.tools.message_tools` | SendMessageToUserTool |
+| `astrbot.core.tools.web_search_tools` | Tavily、Bocha、Brave、Firecrawl、Baidu、Exa 等搜索工具 |
+
+#### 共 **38 个内置工具**，分布在 5 个模块（截止至2026-7-30）
+
+##### `computer_tools`（26 个）
+
+| 工具类 | 文件 |
+|--------|------|
+| `ExecuteShellTool` | astrbot/core/tools/computer_tools/shell.py#L54 |
+| `PythonTool` (sandbox) | astrbot/core/tools/computer_tools/python.py#L80 |
+| `PythonTool` (local) | astrbot/core/tools/computer_tools/python.py#L116 |
+| `CuaScreenshotTool` | astrbot/core/tools/computer_tools/cua.py#L50 |
+| `CuaMouseClickTool` | astrbot/core/tools/computer_tools/cua.py#L108 |
+| `CuaKeyboardTypeTool` | astrbot/core/tools/computer_tools/cua.py#L145 |
+| `FileReadTool` | astrbot/core/tools/computer_tools/fs.py#L295 |
+| `FileWriteTool` | astrbot/core/tools/computer_tools/fs.py#L392 |
+| `FileEditTool` | astrbot/core/tools/computer_tools/fs.py#L464 |
+| `GrepTool` | astrbot/core/tools/computer_tools/fs.py#L555 |
+| `FileUploadTool` | astrbot/core/tools/computer_tools/fs.py#L791 |
+| `FileDownloadTool` | astrbot/core/tools/computer_tools/fs.py#L857 |
+| `RunBrowserSkillTool` | astrbot/core/tools/computer_tools/shipyard_neo/neo_skills.py#L72 |
+| `CreateSkillPayloadTool` | astrbot/core/tools/computer_tools/shipyard_neo/neo_skills.py#L119 |
+| `CreateSkillCandidateTool` | astrbot/core/tools/computer_tools/shipyard_neo/neo_skills.py#L157 |
+| ... 更多 Skill 工具 | neo_skills.py |
+| `BrowserExecTool` | astrbot/core/tools/computer_tools/shipyard_neo/browser.py#L37 |
+| `BrowserBatchExecTool` | astrbot/core/tools/computer_tools/shipyard_neo/browser.py#L95 |
+| ... 更多浏览器工具 | browser.py |
+
+##### `web_search_tools`（10 个）
+
+| 工具类 | 文件 |
+|--------|------|
+| `TavilyWebSearchTool` | astrbot/core/tools/web_search_tools.py#L587 |
+| `BochaWebSearchTool` | astrbot/core/tools/web_search_tools.py#L721 |
+| `BraveWebSearchTool` | astrbot/core/tools/web_search_tools.py#L785 |
+| `FirecrawlWebSearchTool` | astrbot/core/tools/web_search_tools.py#L843 |
+| `BaiduWebSearchTool` | astrbot/core/tools/web_search_tools.py#L961 |
+| `ExaWebSearchTool` | astrbot/core/tools/web_search_tools.py#L1086 |
+| ... 各搜索工具的 Async 版本 | web_search_tools.py |
+
+##### `cron_tools`（1 个）
+- `FutureTaskTool` — astrbot/core/tools/cron_tools.py#L49
+
+##### `knowledge_base_tools`（1 个）
+- `KnowledgeBaseQueryTool` — astrbot/core/tools/knowledge_base_tools.py#L90
+
+##### `message_tools`（1 个）
+- `SendMessageToUserTool` — astrbot/core/tools/message_tools.py#L75
+
+#### 各模块文件详情
+
+**`computer_tools` 模块**（astrbot/core/tools/computer_tools/）：
+
+| 文件 | 工具 |
+|------|------|
+| `shell.py` | `ExecuteShellTool` |
+| `python.py` | `PythonTool`（sandbox 版、local 版） |
+| `fs.py` | `FileReadTool`、`FileWriteTool`、`FileEditTool`、`GrepTool`、`FileUploadTool`、`FileDownloadTool` |
+| `cua.py` | `CuaScreenshotTool`、`CuaMouseClickTool`、`CuaKeyboardTypeTool` |
+| `shipyard_neo/neo_skills.py` | `RunBrowserSkillTool`、`CreateSkillPayloadTool`、`CreateSkillCandidateTool` 等 11 个 Skill 工具 |
+| `shipyard_neo/browser.py` | `BrowserExecTool`、`BrowserBatchExecTool` 等 3 个浏览器工具 |
+
+**`web_search_tools` 模块**（astrbot/core/tools/web_search_tools.py）：
+
+| 工具 | 说明 |
+|------|------|
+| `TavilyWebSearchTool` | Tavily 搜索（async + sync 两个版本） |
+| `BochaWebSearchTool` | 博查搜索 |
+| `BraveWebSearchTool` | Brave 搜索 |
+| `FirecrawlWebSearchTool` | Firecrawl 搜索（async + sync 两个版本） |
+| `BaiduWebSearchTool` | 百度搜索 |
+| `ExaWebSearchTool` | Exa 搜索（async + sync 两个版本） |
+
+#### 获取所有内置工具类的方法
+
+```python
+from astrbot.core.tools.registry import iter_builtin_tool_classes
+
+# 获取所有已注册的内置工具类
+for tool_cls in iter_builtin_tool_classes():
+    print(tool_cls.__name__)
+```
+
+`iter_builtin_tool_classes()` 会自动调用 `ensure_builtin_tools_loaded()`，触发所有 5 个模块的 import，返回 `_builtin_tool_classes_by_name` 中的所有值（截止至2026-7-30，是全部 38 个工具类）。
+
+#### registry.py 核心 API
+
+| 函数 | 说明 |
+|------|------|
+| `builtin_tool(cls, config)` | 装饰器，注册内置工具类，可选配置条件 |
+| `ensure_builtin_tools_loaded()` | 延迟加载所有内置工具模块（只执行一次） |
+| `get_builtin_tool_class(name)` | 按名查找已注册的工具类 |
+| `get_builtin_tool_name(tool_cls)` | 按类查找工具名 |
+| `iter_builtin_tool_classes()` | 遍历所有已注册的工具类 |
+| `get_builtin_tool_config_rule(name)` | 获取工具的配置规则（用于 WebUI 显示启用状态） |
+
 ## 总结
 
 Tool 机制的核心流程：

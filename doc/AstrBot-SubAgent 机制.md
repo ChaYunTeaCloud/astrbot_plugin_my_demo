@@ -581,6 +581,48 @@ async def adjust_subagents(self, event, req):
 
 weather SubAgent **不需要** `on_llm_request` 钩子，因为它的工具集是在 `_execute_handoff` 内部构建的，跟 `on_llm_request` 无关。
 
+#### 关键结论：SubAgent 不触发 `on_llm_request` 钩子
+
+通过源码追踪确认，SubAgent 的 LLM 调用路径与主 Agent 完全不同，**不经过 Pipeline**，因此不会触发任何 Pipeline 钩子（包括 `on_llm_request`、`on_llm_response` 等）。
+
+**主 Agent 的调用路径（经过 Pipeline）**：
+
+```
+用户消息
+  → Pipeline (AgentRequest Stage)
+    → third_party.py#L335: call_event_hook(event, EventType.OnLLMRequestEvent, req)
+      （或 internal.py#L269: call_event_hook(event, EventType.OnLLMRequestEvent, req)）
+    → 触发 @filter.on_llm_request() 钩子
+    → 调用 LLM
+```
+
+源码位置：
+- `astrbot/core/pipeline/process_stage/method/agent_sub_stages/third_party.py#L335`
+- `astrbot/core/pipeline/process_stage/method/agent_sub_stages/internal.py#L269`
+
+**SubAgent 的调用路径（不经过 Pipeline）**：
+
+```
+主 Agent 调用 HandoffTool
+  → _execute_handoff (astrbot/core/astr_agent_tool_exec.py#L301)
+    → _build_handoff_toolset() 构建工具集
+    → ctx.tool_loop_agent() (astrbot/core/star/context.py#L214)
+      → 直接构造 ProviderRequest (context.py#L278-285)
+      → 直接调用 ToolLoopAgentRunner (context.py#L291-320)
+      → 直接调用 provider.text_chat() (tool_loop_agent_runner.py#L482)
+      → 不触发任何 Pipeline 钩子
+```
+
+源码位置：
+- `astrbot/core/astr_agent_tool_exec.py#L301-370` — `_execute_handoff` 方法
+- `astrbot/core/star/context.py#L214-322` — `tool_loop_agent` 方法
+- `astrbot/core/agent/runners/tool_loop_agent_runner.py#L462-482` — `_iter_llm_responses` 方法
+
+**这意味着**：
+- 在 `on_llm_request` 中做的工具注入、请求修改等操作，**只对主 Agent 生效**
+- SubAgent 的工具集完全由 `_build_handoff_toolset` 构建，与 `on_llm_request` 无关
+- 想给 SubAgent 注入工具，只能通过修改 `agent.tools` 属性或使用全局注册的 `@llm_tool`
+
 #### 场景二：SubAgent 之间多层互调（Router → A → B）
 
 这种情况确实有问题。假设 weather SubAgent 想调用 code SubAgent：
@@ -753,9 +795,498 @@ class SubAgentRouter(Star):
 | **LLM 调用方式** | 直接调用 `transfer_to_xxx` | 先 `list_sub_agents` 再 `call_sub_agent`（多一步） |
 | **工具数量** | N 个 HandoffTool | 2 个固定工具 |
 
+### 4.4 进阶方案：自传播工具（无需全局注册）
+
+推荐方案（4.3）需要用 `@llm_tool` 全局注册 `call_sub_agent` 和 `list_sub_agents`，这样所有 Agent 都能看到它们。如果你不想全局暴露，可以用**自传播工具**模式：工具只在 `on_llm_request` 中注入 MainAgent，然后在每次调用 SubAgent 时把自己注入到 SubAgent 的工具集中，实现链式传播。
+
+**核心思路**：
+1. 在 `on_llm_request` 中给 MainAgent 注入 `call_sub_agent` 和 `list_sub_agents`
+2. `call_sub_agent` 的 handler 在调用 SubAgent 时，把这两个工具也加入到 SubAgent 的 ToolSet 中
+3. SubAgent 自然也能调用 `call_sub_agent`，形成链式传播，无需全局注册
+
+**实现骨架**：
+
+```python
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star
+from astrbot.core.astr_agent_context import AstrAgentContext, AgentContextWrapper
+from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.agent.message import Message
+from astrbot.core.agent.tool import FunctionTool
+
+
+class SubAgentRouter(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+        # 创建工具（handler 是绑定方法，可通过 self._xxx_tool 引用自身）
+        self._call_tool = self._build_call_tool()
+        self._list_tool = self._build_list_tool()
+
+    def _build_list_tool(self) -> FunctionTool:
+        async def _handler(event: AstrMessageEvent) -> str:
+            orchestrator = self.context.subagent_orchestrator
+            handoffs = orchestrator.handoffs
+            if not handoffs:
+                return "当前没有可用的子智能体"
+            lines = [f"- {h.agent.name}: {h.description}" for h in handoffs]
+            return "可用子智能体列表:\n" + "\n".join(lines)
+
+        return FunctionTool(
+            name="list_sub_agents",
+            description="获取已有的 SubAgent 列表",
+            parameters={"type": "object", "properties": {}},
+            handler=_handler,
+        )
+
+    def _build_call_tool(self) -> FunctionTool:
+        async def _handler(
+            event: AstrMessageEvent, agent_name: str, input: str
+        ) -> str:
+            """根据名称调用指定的子智能体处理任务"""
+            orchestrator = self.context.subagent_orchestrator
+            handoff = None
+            for h in orchestrator.handoffs:
+                if h.agent.name == agent_name:
+                    handoff = h
+                    break
+            if not handoff:
+                return f"未找到名为 {agent_name} 的子智能体"
+
+            agent = handoff.agent
+
+            # 构造 run_context，构建 SubAgent 的基础工具集
+            agent_context = AstrAgentContext(
+                context=self.context, event=event
+            )
+            run_context = AgentContextWrapper(
+                context=agent_context, tool_call_timeout=120
+            )
+            toolset = FunctionToolExecutor._build_handoff_toolset(
+                run_context, agent.tools
+            )
+
+            # 关键：把 call_sub_agent 和 list_sub_agents 自身也注入到工具集！
+            # 这样 SubAgent 就能调用 call_sub_agent，形成链式传播
+            toolset.add_tool(self._call_tool)
+            toolset.add_tool(self._list_tool)
+
+            # 准备预设对话
+            contexts = None
+            if agent.begin_dialogs:
+                contexts = []
+                for d in agent.begin_dialogs:
+                    contexts.append(
+                        d if isinstance(d, Message)
+                        else Message.model_validate(d)
+                    )
+
+            # Provider 选择
+            prov_id = getattr(handoff, "provider_id", None)
+            if not prov_id:
+                prov_id = (
+                    await self.context.get_current_chat_provider_id(
+                        event.unified_msg_origin
+                    )
+                )
+
+            llm_resp = await self.context.tool_loop_agent(
+                event=event,
+                chat_provider_id=prov_id,
+                prompt=input,
+                system_prompt=agent.instructions,
+                tools=toolset,
+                contexts=contexts,
+                max_steps=30,
+                tool_call_timeout=120,
+            )
+            return llm_resp.completion_text
+
+        return FunctionTool(
+            name="call_sub_agent",
+            description="调用指定子智能体处理任务",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "子智能体名称",
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "任务描述",
+                    },
+                },
+                "required": ["agent_name", "input"],
+            },
+            handler=_handler,
+        )
+
+    @filter.on_llm_request()
+    async def _on_llm_request(self, event, req):
+        # 只给 MainAgent 注入，SubAgent 通过自传播获得
+        req.func_tool.add_tool(self._call_tool)
+        req.func_tool.add_tool(self._list_tool)
+```
+
+**自传播机制说明**：
+
+```
+MainAgent (通过 on_llm_request 注入)
+  │  可见: [call_sub_agent, list_sub_agents, ...其他工具]
+  │
+  ├── 调用 call_sub_agent("weather", "查天气")
+  │   │
+  │   └── handler 内部: toolset.add_tool(call_sub_agent, list_sub_agents)
+  │       │
+  │       └── weather SubAgent (通过 toolset 注入)
+  │           │  可见: [call_sub_agent, list_sub_agents, ...继承的工具]
+  │           │
+  │           └── 调用 call_sub_agent("code", "写代码")
+  │               │
+  │               └── handler 内部: toolset.add_tool(call_sub_agent, list_sub_agents)
+  │                   │
+  │                   └── code SubAgent (通过 toolset 注入)
+  │                       │  可见: [call_sub_agent, list_sub_agents, ...继承的工具]
+  │                       │
+  │                       └── 无限嵌套...
+```
+
+**与推荐方案的对比**：
+
+| 维度 | 推荐方案 (全局注册) | 自传播方案 (请求级注入) |
+|------|-------------------|----------------------|
+| 是否全局注册 | 是（`@llm_tool`） | 否（`on_llm_request` 注入） |
+| 工具可见性 | 所有 Agent 自动可见 | MainAgent 注入 → SubAgent 自传播 |
+| 代码位置 | `@llm_tool` 装饰器在 Star 类中 | 工厂函数或绑定方法 |
+| 持久化污染 | 无 | 无 |
+| 循环风险 | 无（统一入口） | 无（统一入口） |
+| 适用场景 | 通用工具、所有请求都需要 | 不想全局暴露、权限相关 |
+
+### 4.5 进阶方案：复制 Agent 作为临时 Agent
+
+如果你想在调用 SubAgent 时对其配置（工具集、系统提示词等）做临时修改，又不想影响原始配置，可以复制 Agent 作为临时 Agent 使用。
+
+**核心思路**：`Agent` 是 `@dataclass`，可以用 `dataclasses.replace()` 或 `copy.copy()` 创建副本。对副本的修改不会影响原始 Agent。
+
+**实现骨架**：
+
+```python
+import dataclasses
+import copy
+from astrbot.core.agent.agent import Agent
+from astrbot.core.agent.handoff import HandoffTool
+
+
+class SubAgentRouter(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+        self._call_tool = self._build_call_tool()
+        self._list_tool = self._build_list_tool()
+
+    def _build_call_tool(self) -> FunctionTool:
+        async def _handler(
+            event: AstrMessageEvent, agent_name: str, input: str
+        ) -> str:
+            orchestrator = self.context.subagent_orchestrator
+            handoff = None
+            for h in orchestrator.handoffs:
+                if h.agent.name == agent_name:
+                    handoff = h
+                    break
+            if not handoff:
+                return f"未找到名为 {agent_name} 的子智能体"
+
+            # ========== 关键：复制 Agent 作为临时 Agent ==========
+            original_agent = handoff.agent
+
+            # 方式1：dataclasses.replace（推荐，只修改指定字段）
+            temp_agent = dataclasses.replace(
+                original_agent,
+                tools=[self._call_tool, self._list_tool],
+                # 也可以临时修改 system_prompt
+                # instructions="你是一个临时的天气助手",
+            )
+
+            # 方式2：copy.copy（浅拷贝，然后修改）
+            # temp_agent = copy.copy(original_agent)
+            # temp_agent.tools = [self._call_tool, self._list_tool]
+
+            # 为临时 Agent 创建新的 HandoffTool
+            temp_handoff = HandoffTool(agent=temp_agent)
+
+            # 构造 run_context
+            agent_context = AstrAgentContext(
+                context=self.context, event=event
+            )
+            run_context = AgentContextWrapper(
+                context=agent_context, tool_call_timeout=120
+            )
+
+            # 用 _build_handoff_toolset 构建工具集
+            # 由于 temp_agent.tools 已指定为 [call_tool, list_tool]
+            # 这里会走 FunctionTool 对象分支，直接加入工具集
+            toolset = FunctionToolExecutor._build_handoff_toolset(
+                run_context, temp_agent.tools
+            )
+
+            # Provider 选择
+            prov_id = getattr(handoff, "provider_id", None)
+            if not prov_id:
+                prov_id = (
+                    await self.context.get_current_chat_provider_id(
+                        event.unified_msg_origin
+                    )
+                )
+
+            # 直接调用 tool_loop_agent（复用 _execute_handoff 的逻辑）
+            llm_resp = await self.context.tool_loop_agent(
+                event=event,
+                chat_provider_id=prov_id,
+                prompt=input,
+                system_prompt=temp_agent.instructions,
+                tools=toolset,
+                max_steps=30,
+                tool_call_timeout=120,
+            )
+            return llm_resp.completion_text
+
+        return FunctionTool(
+            name="call_sub_agent",
+            description="调用指定子智能体处理任务",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string"},
+                    "input": {"type": "string"},
+                },
+                "required": ["agent_name", "input"],
+            },
+            handler=_handler,
+        )
+
+    @filter.on_llm_request()
+    async def _on_llm_request(self, event, req):
+        req.func_tool.add_tool(self._call_tool)
+        req.func_tool.add_tool(self._list_tool)
+```
+
+**两种复制方式的对比**：
+
+| 维度 | `dataclasses.replace()` | `copy.copy()` |
+|------|------------------------|---------------|
+| 用法 | `replace(obj, field=new_value)` | `copy = copy.copy(obj); copy.field = new_value` |
+| 未指定字段 | 保留原值 | 保留原值（浅拷贝） |
+| 嵌套引用 | 原对象与副本共享嵌套对象（如 `begin_dialogs` 列表） | 同左 |
+| 适用场景 | 只修改少量字段 | 需要在副本上做多次修改 |
+| Python 版本 | 3.7+ | 所有版本 |
+
+**注意事项**：
+- `Agent` 是 `@dataclass`，浅拷贝后 `tools`、`begin_dialogs` 等列表字段仍然是引用。如果需要独立修改这些列表，需要用 `copy.deepcopy()` 或手动创建新列表
+- 临时 HandoffTool 不需要注册到 `llm_tools`，它只在当前请求的 ToolSet 中使用，请求结束后自动释放
+- 这种方式的本质是「动态创建一个拥有新配置的 SubAgent」，适用于需要临时修改 SubAgent 配置的场景
+
+#### 四种方案总对比
+
+| 维度 | 传统方案 (HandoffTool 注入) | 推荐方案 (全局注册) | 自传播方案 (请求级注入) | 复制 Agent 方案 |
+|------|--------------------------|-------------------|---------------------|----------------|
+| 持久化污染 | 有 | 无 | 无 | 无 |
+| 全局注册 | 不需要 | 需要 | 不需要 | 不需要 |
+| 循环风险 | 有 | 无 | 无 | 无 |
+| SubAgent 互调 | 需额外注入 | 天然支持 | 自传播 | 自传播 |
+| 临时修改配置 | 不支持 | 不支持 | 部分支持 | 支持 |
+| 实现复杂度 | 低 | 低 | 中 | 高 |
+| 适用场景 | 单层调用 | 通用工具 | 不想全局暴露 | 临时修改配置 |
+
 ---
 
-## 五、常见问题
+## 五、SubAgent 工具集缺失问题
+
+### 问题描述
+
+当使用原生 `transfer_to_*` 工具调用 SubAgent 时，SubAgent 只能看到**沙箱基础 8 件套**工具，而系统内置的 Skill 工具、网页搜索工具、CUA 工具、浏览器工具等均不可见。MainAgent 能正常看到所有工具，但 SubAgent 的工具集严重缺失。
+
+### 根本原因
+
+通过源码分析，SubAgent 的工具集构建逻辑（`_build_handoff_toolset`）与 MainAgent 的工具集构建逻辑存在显著差异。
+
+**SubAgent 工具构建逻辑**（astrbot/core/astr_agent_tool_exec.py#L267-L281）：
+
+```python
+if tools is None:
+    toolset = ToolSet()
+    # ① 插件/MCP 工具（通过 get_full_tool_set 获取）
+    for registered_tool in tool_mgr.get_full_tool_set():
+        ...
+    # ② 仅沙箱运行时的 8 件套
+    for runtime_tool in runtime_computer_tools.values():
+        ...
+```
+
+**MainAgent 工具构建逻辑**（astrbot/core/astr_main_agent.py#L1116-L1248）：
+
+```python
+# 沙箱 8 件套
+tool_mgr.get_builtin_tool(ExecuteShellTool)
+tool_mgr.get_builtin_tool(PythonTool)
+...
+# Skill 工具
+tool_mgr.get_builtin_tool(RunBrowserSkillTool)
+tool_mgr.get_builtin_tool(CreateSkillPayloadTool)
+tool_mgr.get_builtin_tool(CreateSkillCandidateTool)
+...
+# 网页搜索工具
+tool_mgr.get_builtin_tool(TavilyWebSearchTool)
+tool_mgr.get_builtin_tool(BochaWebSearchTool)
+tool_mgr.get_builtin_tool(BraveWebSearchTool)
+...
+# FutureTaskTool
+tool_mgr.get_builtin_tool(FutureTaskTool)
+# CUA 工具
+tool_mgr.get_builtin_tool(CuaScreenshotTool)
+tool_mgr.get_builtin_tool(CuaMouseClickTool)
+tool_mgr.get_builtin_tool(CuaKeyboardTypeTool)
+# 浏览器工具
+tool_mgr.get_builtin_tool(BrowserExecTool)
+tool_mgr.get_builtin_tool(BrowserBatchExecTool)
+```
+
+### 两个独立的工具系统
+
+关键发现：**系统内置 Tool 和插件全局 Tool 存储在不同的列表中**，`get_full_tool_set()` 只返回插件/MCP 工具，不包含内置工具。
+
+`FunctionToolManager`（astrbot/core/provider/func_tool_manager.py#L287-L292）维护了两个独立的列表：
+
+| 存储属性 | 获取方式 | 包含内容 |
+|---------|---------|---------|
+| `func_list` | `get_full_tool_set()` | 插件 `@llm_tool` 注册的工具 + MCP 工具 |
+| `builtin_func_list` | `get_builtin_tool()` | 系统内置工具（Skill、搜索、CUA 等） |
+
+`get_full_tool_set()` 只返回 `func_list`，**不包含** `builtin_func_list` 中的内置工具。
+
+### SubAgent 缺失的工具清单
+
+对比 MainAgent 和 SubAgent 的工具集：
+
+| 工具类别 | MainAgent | SubAgent | 缺失数量 |
+|---------|-----------|----------|---------|
+| 沙箱基础 8 件套 | ✅ | ✅（通过 `runtime_computer_tools`） | 0 |
+| Skill 工具（3 个） | ✅ | ❌ | 3 |
+| Skill 管理工具（7 个） | ✅ | ❌ | 7 |
+| 网页搜索工具（7 个） | ✅ | ❌ | 7 |
+| FutureTaskTool | ✅ | ❌ | 1 |
+| CUA 工具（3 个） | ✅ | ❌ | 3 |
+| 浏览器工具（3 个） | ✅ | ❌ | 3 |
+| 插件/MCP 工具 | ✅ | ✅（通过 `get_full_tool_set()`） | 0 |
+| **总计缺失** | | | **24 个** |
+
+### GitHub 状态
+
+截至当前版本，**此问题尚未修复**。在 GitHub 的 commit 和 PR 记录中未找到修复此问题的提交。这是框架层面的一个已知缺陷。
+
+### 临时解决方案
+
+如果需要让 SubAgent 也能使用这些内置工具，可以在自定义 `call_sub_agent` 工具的 handler 中，构建 toolset 后手动补充缺失的内置工具：
+
+```python
+from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+from astrbot.core.tools.builtin_tools import (
+    RunBrowserSkillTool,
+    CreateSkillPayloadTool,
+    CreateSkillCandidateTool,
+    TavilyWebSearchTool,
+    BochaWebSearchTool,
+    FutureTaskTool,
+    CuaScreenshotTool,
+    CuaMouseClickTool,
+    CuaKeyboardTypeTool,
+    BrowserExecTool,
+    BrowserBatchExecTool,
+)
+
+async def _call_sub_agent_handler(self, event, agent_name, input):
+    ...
+    toolset = FunctionToolExecutor._build_handoff_toolset(run_context, agent.tools)
+
+    # 补充 SubAgent 缺失的内置工具
+    tool_mgr = self.context.get_llm_tool_manager()
+
+    # Skill 工具
+    toolset.add_tool(tool_mgr.get_builtin_tool(RunBrowserSkillTool))
+    toolset.add_tool(tool_mgr.get_builtin_tool(CreateSkillPayloadTool))
+    toolset.add_tool(tool_mgr.get_builtin_tool(CreateSkillCandidateTool))
+
+    # 网页搜索工具（按需添加）
+    toolset.add_tool(tool_mgr.get_builtin_tool(TavilyWebSearchTool))
+    toolset.add_tool(tool_mgr.get_builtin_tool(BochaWebSearchTool))
+
+    # FutureTask 工具
+    toolset.add_tool(tool_mgr.get_builtin_tool(FutureTaskTool))
+
+    # CUA 工具（按需添加）
+    toolset.add_tool(tool_mgr.get_builtin_tool(CuaScreenshotTool))
+    toolset.add_tool(tool_mgr.get_builtin_tool(CuaMouseClickTool))
+
+    # 浏览器工具（按需添加）
+    toolset.add_tool(tool_mgr.get_builtin_tool(BrowserExecTool))
+    toolset.add_tool(tool_mgr.get_builtin_tool(BrowserBatchExecTool))
+    ...
+```
+
+**注意**：这只是临时方案。根本修复需要修改框架的 `_build_handoff_toolset` 方法，让它也添加非 runtime 的内置工具。在框架修复前，建议根据实际需要选择性补充工具，避免一次性添加过多工具导致 SubAgent 的 prompt 过长。
+
+#### 批量获取内置工具（推荐）
+
+逐个 import 工具类比较繁琐，可以通过 `iter_builtin_tool_classes()` 批量获取所有内置工具类：
+
+```python
+from astrbot.core.tools.registry import iter_builtin_tool_classes
+
+async def _call_sub_agent_handler(self, event, agent_name, input):
+    ...
+    toolset = FunctionToolExecutor._build_handoff_toolset(run_context, agent.tools)
+
+    # 方式1：一次性添加所有内置工具
+    tool_mgr = self.context.get_llm_tool_manager()
+    for tool_cls in iter_builtin_tool_classes():
+        toolset.add_tool(tool_mgr.get_builtin_tool(tool_cls))
+    ...
+```
+
+如果只需要部分模块的工具，可以按模块筛选：
+
+```python
+from astrbot.core.tools import computer_tools, web_search_tools, cron_tools
+
+# 方式2：按模块筛选
+tool_mgr = self.context.get_llm_tool_manager()
+from astrbot.core.provider.func_tool_manager import FuncTool
+
+# 只添加计算机类工具（Skill、CUA、浏览器等）
+for name in dir(computer_tools):
+    obj = getattr(computer_tools, name)
+    if isinstance(obj, type) and issubclass(obj, FuncTool):
+        toolset.add_tool(tool_mgr.get_builtin_tool(obj))
+
+# 只添加搜索工具
+for name in dir(web_search_tools):
+    obj = getattr(web_search_tools, name)
+    if isinstance(obj, type) and issubclass(obj, FuncTool):
+        toolset.add_tool(tool_mgr.get_builtin_tool(obj))
+```
+
+内置工具按模块组织（astrbot/core/tools/registry.py#L12-L18）：
+
+| 模块 | 包含的工具 |
+|------|-----------|
+| `computer_tools` | Skill 工具、浏览器工具、CUA 工具、计算机基础工具 |
+| `cron_tools` | FutureTaskTool |
+| `knowledge_base_tools` | KnowledgeBaseQueryTool |
+| `message_tools` | SendMessageToUserTool |
+| `web_search_tools` | Tavily、Bocha、Brave、Firecrawl、Baidu、Exa 等搜索工具 |
+
+---
+
+## 六、常见问题
 
 ### SubAgent 和普通工具的区别？
 普通工具执行一个具体功能（查天气、搜信息），SubAgent 是一个独立的 Agent，拥有自己的人格和工具集，可以进行多轮对话和复杂推理。
@@ -773,7 +1304,7 @@ class SubAgentRouter(Star):
 ### 如何获取 SubAgent 的执行结果？
 SubAgent 执行完成后，结果会作为 `CallToolResult` 返回给主 Agent，主 Agent 可以决定是否直接回复用户或进一步处理。
 
-## 六、与相关模块的关系
+## 七、与相关模块的关系
 
 | 模块 | 关系 |
 |------|------|
@@ -782,3 +1313,46 @@ SubAgent 执行完成后，结果会作为 `CallToolResult` 返回给主 Agent�
 | **Context 模块** | `Context.subagent_orchestrator` 提供访问子智能体编排器的入口 |
 | **Persona 模块** | SubAgent 可以引用 Persona 中定义的人格设定 |
 | **Provider 模块** | SubAgent 可以使用独立的 Provider（通过 `provider_id` 配置） |
+
+## 为什么几乎所有HOOK都只适用于MainAgent
+
+以下是我的猜测：
+
+简单一句话说，**如果SubAgent能被截断，所有插件都会往它身上注入东西**。
+
+大概率是。理由很简单：
+
+`SubAgentOrchestrator` 构建 SubAgent 的 `Agent` 对象时，**根本没设 `run_hooks`**：
+
+```python
+agent = Agent[AstrAgentContext](
+    name=name,
+    instructions=instructions,
+    tools=tools,
+)
+# run_hooks 没传 → None
+```
+
+而 `@filter.on_agent_begin()` 这类装饰器，是 Star 插件系统在加载插件时收集的，框架只会在**启动 MainAgent 的 Agent 执行流**时绑定上去。
+
+SubAgent 走的是 `HandoffTool` → `tool_loop_agent` 这条独立的执行路径，`run_hooks=None` 意味着它不会触发热加载的任何 filter hook，包括：
+
+- `@filter.on_agent_begin()`
+- `@filter.on_agent_end()`
+- `@filter.on_llm_request()`
+- `@filter.on_llm_response()`
+
+全部只对 MainAgent 生效。SubAgent 是一个裸的 `Agent`，除了 `instructions` 和 `tools` 啥都没带。这就是你想要动态注入工具给 SubAgent 时碰到的墙——没有 hook 口子可以插进去。
+
+至于为什么，我猜测是
+
+SubAgent 本质上是**受控的执行沙箱**——它只拿你显式配给它的人设和工具，不受任何第三方插件干扰。如果 SubAgent 也走 `on_llm_request` 这套 hook 链，那每个装了插件的用户都会面临：
+
+- 插件 A 偷偷往 SubAgent 里塞工具
+- 插件 B 改了 SubAgent 的 system prompt
+- 插件 C 把 SubAgent 的输出截胡了
+
+那 SubAgent 就完全不可控了，配置界面里配的 `tools` 和 `instructions` 等于白写。
+
+所以隔离是对的，你的问题本质上是**怎么在「隔离」的前提下开一个合法的口子**，让管理员有能力显式授权某些工具给特定 SubAgent——就是 #8121 想做的事。
+
