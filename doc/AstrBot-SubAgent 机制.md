@@ -1362,7 +1362,7 @@ SubAgent 本质上是**受控的执行沙箱**——它只拿你显式配给它�
 
 AstrBot 的配置文件有保存此类信息：
 
-```
+```python
 for item in self._cfg["subagent_orchestrator"]["agents"]:
     if item.get("name") == agent_name:
         persona_id = item.get("persona_id")
