@@ -1314,7 +1314,7 @@ SubAgent 执行完成后，结果会作为 `CallToolResult` 返回给主 Agent�
 | **Persona 模块** | SubAgent 可以引用 Persona 中定义的人格设定 |
 | **Provider 模块** | SubAgent 可以使用独立的 Provider（通过 `provider_id` 配置） |
 
-## 八、为什么几乎所有 HOOK 都只适用于 MainAgent
+## 为什么几乎所有HOOK都只适用于MainAgent
 
 以下是我的猜测：
 
@@ -1356,7 +1356,7 @@ SubAgent 本质上是**受控的执行沙箱**——它只拿你显式配给它�
 
 所以隔离是对的，你的问题本质上是**怎么在「隔离」的前提下开一个合法的口子**，让管理员有能力显式授权某些工具给特定 SubAgent——就是 #8121 想做的事。
 
-## 九、如何从 SubAgent 获取其人格设定配置文件的 persona_id
+## 如何从 SubAgent 获取其人格设定配置文件的 persona_id
 
 AstrBot 的配置文件有保存此类信息：
 

@@ -413,7 +413,7 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 | [agent.py](../.venv/Lib/site-packages/astrbot/core/agent/agent.py) | `Agent` 数据类定义 |
 | [handoff.py](../.venv/Lib/site-packages/astrbot/core/agent/handoff.py) | `HandoffTool` 定义 |
 
-## 八、主要差异源码对比
+## 主要差异源码对比
 
 ### 工具集构建对比（2026-7-30）
 
@@ -467,7 +467,7 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 | Skill 存储 | 注入 `system_prompt` 字符串 | ❌ 未处理 | Skill 是纯 prompt 注入，不需要额外字段 |
 
 
-## 九、Agent 相关已知BUG或限制源码位置
+## Agent 相关已知BUG或限制源码位置
 
 | # | Bug/限制描述 | 影响范围 | 源码位置 | 根因分析 | 临时解决方案 |
 |---|-------------|---------|---------|---------|-------------|
@@ -486,7 +486,7 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 | 13 | **SubAgent 路由 Prompt 未注入** | SubAgent 看不到 `router_system_prompt` | [astr_main_agent.py#L635-L641](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L635-L641) | `router_system_prompt` 仅注入到 MainAgent 的 system_prompt，SubAgent 的 system_prompt 仅来自 Persona | 如需 SubAgent 感知路由信息，需在 Persona 中手动包含 |
 | 14 | **`Agent` 类设计局限** | `Agent` 类缺少 `skills`、`metadata` 等字段 | [agent.py#L10-L15](../.venv/Lib/site-packages/astrbot/core/agent/agent.py#L10-L15) | 设计时未考虑 Skill 直接绑定到 Agent，Skill 仅作为 prompt 注入机制 | 可通过继承 `Agent` 添加自定义字段 |
 
-## 十、AstrBot 构建 SubAgent 请求的源码
+## AstrBot 构建 SubAgent 请求的源码
 
 AstrBot 构建 SubAgent 请求涉及 3 个核心文件，按调用顺序：
 
@@ -519,7 +519,7 @@ _build_handoff_toolset() 构建工具集 → 准备 begin_dialogs → 调用 too
 
 ---
 
-## 十一、AstrBot 构建 MainAgent 请求的源码
+## AstrBot 构建 MainAgent 请求的源码
 
 MainAgent 不使用 Agent 类，MainAgent 的构建走的是完全不同的路径：
 
@@ -583,7 +583,7 @@ agent_runner.reset(
 
 ---
 
-## 十二、Agent 和 Persona 的关系
+## Agent 和 Persona 的关系
 
 ```text
 Persona (数据库)                    Agent (运行时)
@@ -678,7 +678,7 @@ class Agent(Generic[TContext]):
 
 ---
 
-## 十三、Persona 缓存机制
+## Persona 缓存机制
 
 ### 启动时加载
 
@@ -755,7 +755,7 @@ def get_persona_v3_by_id(self, persona_id):
 
 ---
 
-## 十四、SubAgentOrchestrator 类做了什么
+## SubAgentOrchestrator 类做了什么
 
 ```python
 class SubAgentOrchestrator:
@@ -884,7 +884,7 @@ class SubAgentOrchestrator:
 
 **这个类本身没问题**——它只是把 `tools` 字段存进 `Agent` 对象。真正的工具注入逻辑不在这里，而在下游 `HandoffTool` 被调用时、框架构建 SubAgent 的 LLM 请求那一步。那就是 #8121 想修的。
 
-## 十五、AstrBot 是根据什么把 Persona 交给对应的 SubAgent 的？
+## AstrBot 是根据什么把 Persona 交给对应的 SubAgent 的？
 
 通过**配置文件**中的 `persona_id` 字段匹配。
 
