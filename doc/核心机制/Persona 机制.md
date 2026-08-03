@@ -474,8 +474,9 @@ if persona_data:
 | Persona 可变性 | 每次请求可不同（支持会话级切换） | 创建后不可变 |
 | Persona 切换 | 支持（基于会话配置） | 不支持 |
 | 数据流向 | `PersonaManager` → `ProviderRequest` | `PersonaManager` → `Agent` 对象 → `ProviderRequest` |
-| Persona 修改后 | 下次请求立即生效 | 需触发 `reload_from_config()` |
+| Persona 修改后 | 下次请求立即生效 | 需重启（`tools`/`system_prompt`/`begin_dialogs`）；`skills` 不生效 |
 | 关联方式 | 会话级 `persona_id` | SubAgent 配置的 `persona_id` |
+| skills 支持 | ✅ 实时注入 | ❌ 框架未实现注入 |
 
 ---
 

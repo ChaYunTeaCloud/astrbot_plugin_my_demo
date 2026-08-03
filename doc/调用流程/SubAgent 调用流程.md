@@ -324,6 +324,8 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 | 12 | **SubAgent 无摘要压缩能力** | SubAgent 历史对话无自动压缩 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | `tool_loop_agent` 未传入压缩相关参数；MainAgent 有 `llm_compress_instruction` 等配置 ([astr_main_agent.py#L1687-L1689](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1687-L1689)) | 暂无，依赖 Provider 自身的上下文窗口 |
 | 13 | **SubAgent 路由 Prompt 未注入** | SubAgent 看不到 `router_system_prompt` | [astr_main_agent.py#L650-L656](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L650-L656) | `router_system_prompt` 仅注入到 MainAgent 的 system_prompt，SubAgent 的 system_prompt 仅来自 Persona | 如需 SubAgent 感知路由信息，需在 Persona 中手动包含 |
 | 14 | **`Agent` 类设计局限** | `Agent` 类缺少 `skills`、`metadata` 等字段 | [agent.py#L10-L15](../.venv/Lib/site-packages/astrbot/core/agent/agent.py#L10-L15) | 设计时未考虑 Skill 直接绑定到 Agent，Skill 仅作为 prompt 注入机制 | 可通过继承 `Agent` 添加自定义字段 |
+| 15 | **Persona 数据修改后不实时生效** | WebUI 修改 Persona 的 tools/system_prompt/begin_dialogs 后 SubAgent 需重启 | [subagent_orchestrator.py#L29-L104](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L29-L104) | `reload_from_config()` 仅启动时调用，`update_persona()` 不通知 SubAgentOrchestrator 重新加载 | 重启 AstrBot，或在插件中直接从 `PersonaManager` 实时读取 |
+| 16 | **SubAgent 的 Skill 根本不生效** | Persona 配置的 skills 对 SubAgent 完全无效（不是延迟生效，是框架未实现） | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | SubAgent 执行路径无 Skill 注入逻辑；`tool_loop_agent()` 不接收 skills 参数 | 在插件中手动调用 `SkillManager.list_skills()` + `build_skills_prompt()` 注入到 system_prompt |
 
 ## 九、AstrBot 构建 SubAgent 请求的源码
 

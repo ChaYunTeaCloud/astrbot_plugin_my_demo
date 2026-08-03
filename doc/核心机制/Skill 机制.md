@@ -313,9 +313,15 @@ if persona and persona.get("skills") is not None:
 
 ## 七、与 SubAgent 的关系
 
-### SubAgent 默认看不到 Skill
+### SubAgent 根本不支持 Skill
 
-与 Tool 类似，SubAgent 的工具集在 `_build_handoff_toolset` 中构建，Skill 注入逻辑（`build_skills_prompt`）只在主 Agent 的 `astr_main_agent.py` 中执行。因此 **SubAgent 的 system prompt 中默认不包含 Skill 信息**。
+SubAgent 不仅默认看不到 Skill，即使通过 Persona 配置了 skills 也**完全不生效**。原因是框架层面的设计：
+
+1. **注入逻辑缺失**：Skill 注入逻辑（`build_skills_prompt`）仅在 MainAgent 的 `_ensure_persona_and_skills()`（[astr_main_agent.py#L499-L575](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L575)）中执行，SubAgent 的执行路径（[astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374)）中没有任何 Skill 注入代码
+2. **搜索验证**：在 `subagent_orchestrator.py` 中搜索 `skill` 关键词为零匹配——SubAgent 创建时不读取 Persona 的 `skills` 字段
+3. **`tool_loop_agent()` 不接收 skills 参数**：SubAgent 执行时调用的 `tool_loop_agent()` 方法签名中没有 skills 参数
+
+**结论**：Persona 的 `skills` 字段对 SubAgent 完全无效，这不是 bug，而是框架尚未实现的功能。
 
 ### 让 SubAgent 也能使用 Skill
 

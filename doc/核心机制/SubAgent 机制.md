@@ -1526,3 +1526,92 @@ class SubAgentOrchestrator:
 | 8-9 | 日志 + 原子替换 handoffs 列表 |
 
 **这个类本身没问题**——它只是把 `tools` 字段存进 `Agent` 对象。真正的工具注入逻辑不在这里，而在下游 `HandoffTool` 被调用时、框架构建 SubAgent 的 LLM 请求那一步。那就是 #8121 想修的。
+
+---
+
+## 十一、Persona 数据实时性问题
+
+### 问题描述
+
+通过 WebUI 修改 Persona 的 **tools**、**skills**、**system_prompt**、**begin_dialogs** 等字段后：
+
+- **MainAgent** 实时生效
+- **SubAgent** 需重启 AstrBot 才能生效（且 skills 根本不生效）
+
+### 数据流分析
+
+`PersonaManager` 维护两层数据：
+
+| 数据层 | 类型 | 说明 |
+|--------|------|------|
+| `self.personas` | 数据库 ORM 对象列表 | 持久化存储 |
+| `self.personas_v3` | 内存 TypedDict 列表 | 由 `get_v3_persona_data()` 从 `self.personas` 构建 |
+
+WebUI 保存时调用 `update_persona()`（[persona_mgr.py#L137-L170](../.venv/Lib/site-packages/astrbot/core/persona_mgr.py#L137-L170)）：
+1. 更新数据库
+2. 更新 `self.personas`
+3. 调用 `self.get_v3_persona_data()` 重建 `personas_v3` 内存缓存
+
+### 两条读取路径对比
+
+#### MainAgent（实时）
+
+每次请求时，`build_main_agent()`（[astr_main_agent.py#L500-L510](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L500-L510)）调用 `resolve_selected_persona()` → 从 `personas_v3`（已被 `update_persona` 重建）读取 tools/skills → 注入到 `ProviderRequest`。
+
+```text
+请求触发 → resolve_selected_persona() → personas_v3（最新） → ProviderRequest
+```
+
+#### SubAgent（不实时）
+
+启动时 `SubAgentOrchestrator.reload_from_config()`（[subagent_orchestrator.py#L29-L104](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L29-L104)）调用 `get_persona_v3_by_id()` 读取 tools/begin_dialogs/system_prompt，构建 `Agent` 和 `HandoffTool`，缓存在 `self.handoffs`。后续执行 SubAgent 时直接读 `self.handoffs` 缓存。
+
+```text
+启动触发 → reload_from_config() → Agent 对象（固化） → self.handoffs（缓存）
+SubAgent 执行 → 读取 self.handoffs（启动时的快照）
+```
+
+### 根因
+
+`update_persona()` 重建了 `personas_v3`，但没有通知 `SubAgentOrchestrator` 重新调用 `reload_from_config()`。SubAgent 的 handoffs 在启动后不再更新，persona 变更无法同步。
+
+### 影响范围
+
+| 场景 | tools | skills | system_prompt | begin_dialogs |
+|------|-------|--------|---------------|---------------|
+| MainAgent | ✅ 实时 | ✅ 实时 | ✅ 实时 | ✅ 实时 |
+| SubAgent | ❌ 需重启 | ❌ **不生效**（框架未实现 Skill 注入） | ❌ 需重启 | ❌ 需重启 |
+
+### 为什么 SubAgent 的 skills 根本不生效
+
+SubAgent 的执行路径（[astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374)）直接调用 `tool_loop_agent()`，仅传递 `system_prompt`、`tools`、`contexts` 参数：
+
+```python
+llm_resp = await ctx.tool_loop_agent(
+    prompt=input_,
+    system_prompt=tool.agent.instructions,  # 只传了 system_prompt
+    tools=toolset,                           # 和 tools
+    contexts=contexts,                       # 和 begin_dialogs
+)
+```
+
+而 Skill 注入逻辑（`build_skills_prompt()`）仅在 MainAgent 的 `_ensure_persona_and_skills()`（[astr_main_agent.py#L499-L575](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L575)）中执行。SubAgent 路径中**没有任何 Skill 注入代码**——在 `subagent_orchestrator.py` 中搜索 `skill` 关键词为零匹配。
+
+### 插件开发者的应对策略
+
+如需在插件中获取 SubAgent 的最新 Persona 数据，应**绕过 `handoff.agent` 缓存**，直接从 `PersonaManager` 实时读取：
+
+```python
+# 错误方式：读取缓存（启动时的快照）
+agent = handoff_tool.agent
+tools = agent.tools  # 可能是启动时的旧值
+
+# 正确方式：实时读取
+persona_data = self.context.persona_manager.get_persona_v3_by_id(
+    handoff_tool.agent.name  # 或配置中的 persona_id
+)
+if persona_data:
+    tools = persona_data.get("tools")      # 最新的 tools
+    skills = persona_data.get("skills")    # 最新的 skills
+    prompt = persona_data.get("prompt")    # 最新的 system_prompt
+```
