@@ -49,7 +49,7 @@ SubAgent（子智能体）是 AstrBot 中的**任务委派机制**。你可以�
     │
     ├── LLM 决定调用某个工具（如 get_weather）
     │
-    └── 工具执行器 execute() 判断类型（astr_agent_tool_exec.py#L129）
+    └── 工具执行器 execute() 判断类型（astr_agent_tool_exec.py#L131）
         │
         ├── isinstance(tool, HandoffTool)? → 否（#L140）
         ├── isinstance(tool, MCPTool)? → 否（#L152）
@@ -84,7 +84,7 @@ HandoffTool 触发的是一个全新的、独立的 Agent 对话循环，功能�
     │
     ├── LLM 决定调用某个 HandoffTool
     │
-    └── 工具执行器 execute() 判断类型（astr_agent_tool_exec.py#L129）
+    └── 工具执行器 execute() 判断类型（astr_agent_tool_exec.py#L131）
         │
         ├── isinstance(tool, HandoffTool)? → 是（#L140）
         │
@@ -103,7 +103,7 @@ HandoffTool 触发的是一个全新的、独立的 Agent 对话循环，功能�
 
 补充：HandoffTool 的执行是在工具执行器中处理的
 
-从 ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L140-150 可以看到，工具执行器通过 isinstance(tool, HandoffTool) 判断是否为转接工具，然后走 _execute_handoff 分支，而不是普通的 handler 调用分支。
+从 ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L142-L152 可以看到，工具执行器通过 isinstance(tool, HandoffTool) 判断是否为转接工具，然后走 _execute_handoff 分支，而不是普通的 handler 调用分支。
 
 
 #### 关键区别
@@ -124,10 +124,10 @@ AstrBot 的所有工具（普通工具、转接工具、MCP 工具、后台任�
 
 **1. FunctionTool 最终会走到 `_execute_handoff` 吗？**
 
-**不会。** 工具执行器的路由逻辑是互斥的 `if/elif/else` 结构（文件：../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L129-184）：
+**不会。** 工具执行器的路由逻辑是互斥的 `if/elif/else` 结构（文件：../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L131-L186）：
 
 ```python
-# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L140-150
+# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L142-L152
 # 只有 HandoffTool 走这里
 if isinstance(tool, HandoffTool):
     is_bg = tool_args.pop("background_task", False)
@@ -139,19 +139,19 @@ if isinstance(tool, HandoffTool):
         yield r
     return
 
-# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L152-155
+# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L154-L157
 # 只有 MCPTool 走这里
 elif isinstance(tool, MCPTool):
     async for r in cls._execute_mcp(tool, run_context, **tool_args):
         yield r
     return
 
-# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L157-181
+# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L159-L183
 elif tool.is_background_task:
     # 背景任务处理
     ...
 
-# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L182-184
+# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L184-L186
 else:
     # 所有普通 FunctionTool 走这里
     async for r in cls._execute_local(tool, run_context, **tool_args):
@@ -262,6 +262,18 @@ HandoffTool 继承 FunctionTool，是一种特殊的工具：
 }
 ```
 
+#### HandoffTool 的多模态与后台任务支持
+
+HandoffTool 的 `default_parameters()` 包含三个参数（`../.venv/Lib/site-packages/astrbot/core/agent/handoff.py`）：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `input` | string | — | 交接任务描述 |
+| `image_urls` | array of string | [] | 多模态图片输入（URL 或本地路径），传递给 SubAgent |
+| `background_task` | boolean | false | 设为 true 时以后台任务模式执行，适用于长任务/外部工具/无需用户等待的场景 |
+
+此外，HandoffTool 还支持 `provider_id` 属性，允许为每个 SubAgent 指定独立的 LLM Provider。
+
 #### SubAgentOrchestrator（子智能体编排器）
 
 **文件**：../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py
@@ -357,7 +369,7 @@ def register_agent(name, instruction, tools=None, run_hooks=None):
     return decorator
 ```
 
-**注意**：装饰器注册的 HandoffTool 是**直接加到全局工具列表**的，而配置文件注册的 HandoffTool 是在 `../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L625-626` 中动态注入到请求工具集的。
+**注意**：装饰器注册的 HandoffTool 是**直接加到全局工具列表**的，而配置文件注册的 HandoffTool 是在 `../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L639-L640` 中动态注入到请求工具集的。
 
 ---
 
@@ -370,7 +382,7 @@ def register_agent(name, instruction, tools=None, run_hooks=None):
 #### 执行入口
 
 ```python
-# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L140-150
+# ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L142-L152
 if isinstance(tool, HandoffTool):
     is_bg = tool_args.pop("background_task", False)
     if is_bg:
@@ -502,7 +514,7 @@ async def ask_weather(self, event):
     # 2. tool_loop_agent() 需要的是 ToolSet 对象
     # 3. agent.tools 为 None 时表示"继承所有工具"，需要展开为实际工具列表
     # 4. 需要排除 HandoffTool，防止子 Agent 循环转接
-    # _build_handoff_toolset() 处理了上述所有逻辑，所以直接调用它是最稳妥的方式（astr_agent_tool_exec.py#L244-298）
+    # _build_handoff_toolset() 处理了上述所有逻辑，所以直接调用它是最稳妥的方式（astr_agent_tool_exec.py#L248-L302）
     from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
 
     # 构建工具集（与 _build_handoff_toolset 逻辑相同）
@@ -525,7 +537,7 @@ async def ask_weather(self, event):
         event.unified_msg_origin
     )
 
-    # 启动子 Agent 对话（这就是 _execute_handoff 内部做的事，astr_agent_tool_exec.py#L359-370）
+    # 启动子 Agent 对话（这就是 _execute_handoff 内部做的事，astr_agent_tool_exec.py#L363-L374）
     llm_resp = await self.context.tool_loop_agent(
         event=event,
         chat_provider_id=prov_id,
@@ -608,7 +620,7 @@ weather SubAgent **不需要** `on_llm_request` 钩子，因为它的工具集�
 
 ```text
 主 Agent 调用 HandoffTool
-  → _execute_handoff (../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L301)
+  → _execute_handoff (../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L305)
     → _build_handoff_toolset() 构建工具集
     → ctx.tool_loop_agent() (../.venv/Lib/site-packages/astrbot/core/star/context.py#L214)
       → 直接构造 ProviderRequest (context.py#L278-285)
@@ -618,7 +630,7 @@ weather SubAgent **不需要** `on_llm_request` 钩子，因为它的工具集�
 ```
 
 源码位置：
-- `../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L301-370` — `_execute_handoff` 方法
+- `../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L305-L377` — `_execute_handoff` 方法
 - `../.venv/Lib/site-packages/astrbot/core/star/context.py#L214-322` — `tool_loop_agent` 方法
 - `../.venv/Lib/site-packages/astrbot/core/agent/runners/tool_loop_agent_runner.py#L462-482` — `_iter_llm_responses` 方法
 
@@ -654,7 +666,7 @@ async def setup_router(self, event, req):
             h.agent.tools = [tool for tool in req.func_tool.tools]
 ```
 
-**关键点**：`_build_handoff_toolset` 的显式指定分支（../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L296）支持传入 `FunctionTool` 对象直接加入工具集，不需要通过名字查找：
+**关键点**：`_build_handoff_toolset` 的显式指定分支（../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L300）支持传入 `FunctionTool` 对象直接加入工具集，不需要通过名字查找：
 
 ```python
 elif isinstance(tool_name_or_obj, FunctionTool):
@@ -1109,13 +1121,13 @@ class SubAgentRouter(Star):
 
 ### 问题描述
 
-当使用原生 `transfer_to_*` 工具调用 SubAgent 时，SubAgent 只能看到**沙箱基础 8 件套**工具，而系统内置的 Skill 工具、网页搜索工具、CUA 工具、浏览器工具等均不可见。MainAgent 能正常看到所有工具，但 SubAgent 的工具集严重缺失。
+当使用原生 `transfer_to_*` 工具调用 SubAgent 时，SubAgent 只能看到**沙箱基础工具集**工具，而系统内置的 Skill 工具、网页搜索工具、CUA 工具、浏览器工具等均不可见。MainAgent 能正常看到所有工具，但 SubAgent 的工具集严重缺失。
 
 ### 根本原因
 
 通过源码分析，SubAgent 的工具集构建逻辑（`_build_handoff_toolset`）与 MainAgent 的工具集构建逻辑存在显著差异。
 
-**SubAgent 工具构建逻辑**（../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L267-L281）：
+**SubAgent 工具构建逻辑**（../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L271-L285）：
 
 ```python
 if tools is None:
@@ -1123,15 +1135,15 @@ if tools is None:
     # ① 插件/MCP 工具（通过 get_full_tool_set 获取）
     for registered_tool in tool_mgr.get_full_tool_set():
         ...
-    # ② 仅沙箱运行时的 8 件套
+    # ② 仅沙箱运行时的基础工具集
     for runtime_tool in runtime_computer_tools.values():
         ...
 ```
 
-**MainAgent 工具构建逻辑**（../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1116-L1248）：
+**MainAgent 工具构建逻辑**（../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1130-L1262）：
 
 ```python
-# 沙箱 8 件套
+# 沙箱基础工具集
 tool_mgr.get_builtin_tool(ExecuteShellTool)
 tool_mgr.get_builtin_tool(PythonTool)
 ...
@@ -1175,7 +1187,7 @@ tool_mgr.get_builtin_tool(BrowserBatchExecTool)
 
 | 工具类别 | MainAgent | SubAgent | 缺失数量 |
 |---------|-----------|----------|---------|
-| 沙箱基础 8 件套 | ✅ | ✅（通过 `runtime_computer_tools`） | 0 |
+| 沙箱基础工具集 | ✅ | ✅（通过 `runtime_computer_tools`） | 0 |
 | Skill 工具（3 个） | ✅ | ❌ | 3 |
 | Skill 管理工具（7 个） | ✅ | ❌ | 7 |
 | 网页搜索工具（7 个） | ✅ | ❌ | 7 |
@@ -1289,6 +1301,10 @@ for name in dir(web_search_tools):
 | `knowledge_base_tools` | KnowledgeBaseQueryTool |
 | `message_tools` | SendMessageToUserTool |
 | `web_search_tools` | Tavily、Bocha、Brave、Firecrawl、Baidu、Exa 等搜索工具 |
+
+### SubAgent 后台任务模式
+
+当 HandoffTool 的 `background_task` 参数为 `true` 时，框架会走 `_execute_handoff_background()` 路径（`../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L380`），通过 `CronMessageEvent` 通知机制异步执行 SubAgent 任务，不阻塞 MainAgent 的响应。
 
 ---
 

@@ -49,7 +49,7 @@ YAML frontmatter 中的 `name` 和 `description` 会被提取出来，注入到 
 
 ## 二、Skill 的来源与生命周期
 
-### Skill 的三种来源
+### Skill 的五种来源
 
 | source_type | source_label | 说明 | 存储位置 |
 |-------------|-------------|------|---------|
@@ -124,7 +124,7 @@ SkillManager().set_sandbox_skills_cache(skills)
 
 ### 注入时机
 
-Skill 在每次 LLM 请求的 system prompt 构建阶段注入（[astr_main_agent.py#L529-561](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L529-L561)）：
+Skill 在每次 LLM 请求的 system prompt 构建阶段注入（[astr_main_agent.py#L499-L575](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L575)）：
 
 ```python
 # 1. 获取当前运行时的 Skill 列表
@@ -252,6 +252,14 @@ sm.install_skill_from_zip("/path/to/skill.zip")
 prompt = build_skills_prompt(skills)
 ```
 
+### 请求级 Workspace Skill
+
+`list_workspace_skills(workspace_root)` 方法（`../.venv/Lib/site-packages/astrbot/core/skills/skill_manager.py#L342`）支持在请求级别注入 workspace skill，优先级最高。这允许插件为特定会话动态提供 Skill，而不影响全局配置。
+
+### 插件 Skill 判断
+
+`is_plugin_skill(name: str) -> bool` 方法判断指定 Skill 是否来自插件捆绑的 `skills/` 目录。插件提供的 Skill 是只读的，不能通过 WebUI 删除。
+
 ---
 
 ## 五、Neo：Skill 相关工具
@@ -286,7 +294,7 @@ AstrBot 提供了一组操作 Skill 的内置工具（Neo Skill 工具），定�
 
 ### Persona 级别的 Skill 过滤
 
-在 [astr_main_agent.py#L543-553](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L543-L553) 中，如果 Persona 配置了 `skills` 字段，会按列表过滤 Skill：
+在 [astr_main_agent.py#L557-L567](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L557-L567) 中，如果 Persona 配置了 `skills` 字段，会按列表过滤 Skill：
 
 ```python
 if persona and persona.get("skills") is not None:
@@ -352,7 +360,7 @@ async def _call_sub_agent_handler(self, event, agent_name, input):
 | [skill_manager.py](../.venv/Lib/site-packages/astrbot/core/skills/skill_manager.py) | Skill 管理核心类 |
 | [neo_skill_sync.py](../.venv/Lib/site-packages/astrbot/core/skills/neo_skill_sync.py) | Neo Skill 同步管理器 |
 | [neo_skills.py](../.venv/Lib/site-packages/astrbot/core/tools/computer_tools/shipyard_neo/neo_skills.py) | Skill 操作工具（Neo） |
-| [astr_main_agent.py#L529-561](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L529-L561) | Skill 注入主 Agent 的逻辑 |
+| [astr_main_agent.py#L499-L575](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L575) | Skill 注入主 Agent 的逻辑 |
 | [computer_client.py#L108-114](../.venv/Lib/site-packages/astrbot/core/computer/computer_client.py#L108-L114) | Sandbox Skill 扫描与缓存 |
 
 ## 十、Skill与Tool的关系
@@ -385,7 +393,7 @@ LLM 不需要调用 Skill 作为工具——Skill 的内容会被**注入到 sys
 
 ### Skill 的来源与生命周期
 
-根据 [skill_manager.py#L493-640](../.venv/Lib/site-packages/astrbot/core/skills/skill_manager.py#L493-L640)，Skill 有三种来源：
+根据 [skill_manager.py#L493-640](../.venv/Lib/site-packages/astrbot/core/skills/skill_manager.py#L493-L640)，Skill 有五种来源：
 
 | source_type | source_label | 说明 |
 |-------------|-------------|------|
@@ -438,7 +446,7 @@ Skill 本身**不是工具**，不会出现在 `func_list` 或 `builtin_func_lis
 
 Skill 注入逻辑**只存在于主 Agent 的代码路径**中：
 
-- [astr_main_agent.py#L529-561](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L529-L561) — 唯一调用 `skill_manager.list_skills()` 和 `build_skills_prompt()` 的地方
+- [astr_main_agent.py#L499-L575](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L575) — 唯一调用 `skill_manager.list_skills()` 和 `build_skills_prompt()` 的地方
 
 而 SubAgent 的执行路径中**没有任何 Skill 相关代码**：
 

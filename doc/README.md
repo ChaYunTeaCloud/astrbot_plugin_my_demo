@@ -13,7 +13,7 @@
 | 文档 | 核心内容 |
 |------|----------|
 | [Tool 机制](./核心机制/Tool%20机制.md) | Tool 工具机制、FunctionTool / ToolSet / FunctionToolManager、@llm_tool 装饰器、动态注入、自定义工具管理类 |
-| [Skill 机制](./核心机制/Skill%20机制.md) | Skill 本质（Markdown 提示词）、Skill 三种来源、SkillManager、Skill 注入流程、SubAgent 的 Skill 缺失问题 |
+| [Skill 机制](./核心机制/Skill%20机制.md) | Skill 本质（Markdown 提示词）、Skill 五种来源、SkillManager、Skill 注入流程、SubAgent 的 Skill 缺失问题 |
 | [Persona 机制](./核心机制/Persona%20机制.md) | Persona ORM 模型、Personality TypedDict、PersonaManager、缓存机制、与 Agent 的关系、SubAgent 的 Persona 分配流程 |
 | [SubAgent 机制](./核心机制/SubAgent%20机制.md) | SubAgent 子智能体机制、HandoffTool 工作流、工具路由分发、SubAgentOrchestrator 类详解、工具集缺失问题与解决方案 |
 

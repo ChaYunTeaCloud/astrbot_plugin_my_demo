@@ -88,7 +88,7 @@ req.system_prompt += f"\n{build_skills_prompt(skills)}\n"
 #### Step 5: 文件提取工具
 
 ```python
-# L1543-L1547
+# L1557-L1561
 if config.file_extract_enabled:
     await _apply_file_extract(event, req, config)
 ```
@@ -96,21 +96,21 @@ if config.file_extract_enabled:
 #### Step 6: 插件工具过滤
 
 ```python
-# L1564
+# L1578
 _plugin_tool_fix(event, req)  # 根据会话过滤插件工具
 ```
 
 #### Step 7: 知识库工具
 
 ```python
-# L1559
+# L1573
 await _apply_kb(event, req, plugin_context, config)
 ```
 
 #### Step 8: 网络搜索工具注入
 
 ```python
-# L1565
+# L1579
 await _apply_web_search_tools(event, req, plugin_context)
 ```
 
@@ -119,7 +119,7 @@ await _apply_web_search_tools(event, req, plugin_context)
 #### Step 9: 运行时计算工具注入
 
 ```python
-# L1570-L1573
+# L1584-L1587
 if config.computer_use_runtime == "sandbox":
     _apply_sandbox_tools(config, req, req.session_id)
 elif config.computer_use_runtime == "local":
@@ -152,12 +152,23 @@ elif config.computer_use_runtime == "local":
 #### Step 11: 主动消息工具
 
 ```python
-# L1584-L1591
+# L1598-L1605
 if event.platform_meta.support_proactive_message:
     req.func_tool.add_tool(
         plugin_context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
     )
 ```
+
+#### Step 12: 群消息历史工具注入
+
+当配置启用时，MainAgent 会注入 `GetGroupMessageHistoryTool`（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1616-L1620`），允许 LLM 获取群聊历史消息。
+
+#### LLM 安全模式注入
+
+在 MainAgent 请求构建过程中，框架会根据配置注入 LLM 安全模式提示词（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1115-L1122`）：
+
+- 当 `config.safety_mode_strategy == "system_prompt"` 时，会在 system_prompt 前面添加 `LLM_SAFETY_MODE_SYSTEM_PROMPT`
+- 该功能通过 `_apply_llm_safety_mode()` 实现，在 `build_main_agent` 中调用（`#L1581-L1582`）
 
 ### 2.3 MainAgent 最终工具构成
 
@@ -176,7 +187,7 @@ MainAgent 工具集 =
 ### 2.4 MainAgent 执行方式
 
 ```python
-# L1645-L1671
+# L1677-L1703
 agent_runner.reset(
     provider=provider,
     request=req,
@@ -233,7 +244,7 @@ req = build_result.provider_request
 
 ### 3.3 AgentRunner 配置与执行
 
-[astr_main_agent.py#L1645-L1671](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1645-L1671)
+[astr_main_agent.py#L1677-L1703](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1677-L1703)
 
 ```python
 agent_runner.reset(
@@ -259,15 +270,15 @@ agent_runner.reset(
 
 ### 4.1 工具注入差异
 
-MainAgent 拥有完整的工具集，包括 `func_list` 中的插件工具与 MCP 工具、`builtin_func_list` 中的全部系统内置工具（约 25 个）、网络搜索工具、文件提取工具、知识库工具、Skill 辅助工具、主动消息工具，以及所有 `transfer_to_*` Handoff 工具。
+MainAgent 拥有完整的工具集，包括 `func_list` 中的插件工具与 MCP 工具、`builtin_func_list` 中的全部系统内置工具（约 25 个，具体数量取决于版本配置）、网络搜索工具、文件提取工具、知识库工具、Skill 辅助工具、主动消息工具，以及所有 `transfer_to_*` Handoff 工具。
 
-SubAgent 仅拥有 `func_list` 中的工具（排除 Handoff 工具以防死循环）加上运行时计算工具的沙箱 8 件套，缺失系统内置工具、网络搜索、文件提取、知识库、Skill 辅助、主动消息等能力。
+SubAgent 仅拥有 `func_list` 中的工具（排除 Handoff 工具以防死循环）加上运行时计算工具的沙箱基础工具集，缺失系统内置工具、网络搜索、文件提取、知识库、Skill 辅助、主动消息等能力。
 
 | 工具类别 | MainAgent | SubAgent |
 |---------|-----------|----------|
 | 插件注册工具 | ✅ | ✅（通过 func_list） |
 | MCP 工具 | ✅ | ✅（通过 func_list） |
-| 系统内置工具（builtin_func_list） | ✅ | ❌ 仅运行时 8 件套 |
+| 系统内置工具（builtin_func_list） | ✅ | ❌ 仅运行时基础工具集 |
 | transfer_to_* Handoff | ✅ | ❌（已排除，防止死循环） |
 | 网络搜索工具 | ✅ | ❌ |
 | 文件提取工具 | ✅ | ❌ |

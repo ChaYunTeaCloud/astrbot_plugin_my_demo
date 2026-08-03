@@ -633,7 +633,7 @@ handoff = HandoffTool(
 
 这一步没做任何过滤或加工。
 
-当 MainAgent 调用 `transfer_to_test_sub_agent`，`HandoffTool.call()` 被执行时，框架构建 SubAgent 的 LLM 请求，这时候它要根据 `Agent.tools` 来决定给 SubAgent 注入哪些工具。`tools=None` 按设计应该等于「全部工具」，但实际注入时没有把全局 Skill 工具（`astrbot_run_browser_skill` 等）带过去，只给了沙箱基础 8 件套。
+当 MainAgent 调用 `transfer_to_test_sub_agent`，`HandoffTool.call()` 被执行时，框架构建 SubAgent 的 LLM 请求，这时候它要根据 `Agent.tools` 来决定给 SubAgent 注入哪些工具。`tools=None` 按设计应该等于「全部工具」，但实际注入时没有把全局 Skill 工具（`astrbot_run_browser_skill` 等）带过去，只给了沙箱基础工具集。
 
 所以不是「包成 HandoffTool 时做了不符合预期的行为」，而是「HandoffTool 被执行时，工具注入那一步漏了全局 Skill」。
 

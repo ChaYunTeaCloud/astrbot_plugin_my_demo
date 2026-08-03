@@ -365,7 +365,7 @@ handler=MyPlugin._get_weather_handler  # 未绑定的类方法，不是 self._ge
 
 `MessageEventResult` 是 AstrBot 的 消息链对象 ，继承自 `MessageChain` ，可以包含文本、图片、@等多种消息组件。
 
-从 ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L660-693 可以看到:
+从 ../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L664-697 可以看到:
 
 - 如果返回的是 str ：框架会把它包装成 mcp.types.TextContent 返回给 LLM，LLM 再决定怎么回复用户
 - 如果返回的是 MessageEventResult （通过 yield ）：框架会 直接把消息发送给用户 （ event.send() ），同时 yield None 告诉 Agent Loop "工具已经直接发消息了，不用再让 LLM 回复了"
@@ -1602,7 +1602,7 @@ for tool_cls in iter_builtin_tool_classes():
     toolset.add_tool(tool_mgr.get_builtin_tool(tool_cls))
 ```
 
-但说实话你不需要自己写这段——因为 handoff 执行时 `_get_runtime_computer_tools()` 已经把沙箱 8 件套加进去了，`get_full_tool_set()` 也加了插件工具。你真正缺的是 **Neo Skill 工具**（`astrbot_run_browser_skill`、`astrbot_create_skill_payload` 那堆）和 **Skill prompt 文本**。
+但说实话你不需要自己写这段——因为 handoff 执行时 `_get_runtime_computer_tools()` 已经把沙箱基础工具集加进去了，`get_full_tool_set()` 也加了插件工具。你真正缺的是 **Neo Skill 工具**（`astrbot_run_browser_skill`、`astrbot_create_skill_payload` 那堆）和 **Skill prompt 文本**。
 
 Neo Skill 工具也是用 `@builtin_tool` 注册的，所以也在 `iter_builtin_tool_classes()` 的返回里。问题只是 handoff 执行时没把它们加进 toolset。你如果要自己接管的话，`iter_builtin_tool_classes` + `get_builtin_tool` 一把梭就能搞定工具这一层。
 
