@@ -262,8 +262,11 @@ from astrbot.api.web import request, json_response, error_response, file_respons
 class WebPlugin(Star):
     def __init__(self, context):
         super().__init__(context)
-    
-    @filter.web_api("/api/v1/users", methods=["GET"])
+        self.context.register_web_api("/api/v1/users", self.get_users, ["GET"], "获取用户列表")
+        self.context.register_web_api("/api/v1/users", self.create_user, ["POST"], "创建用户")
+        self.context.register_web_api("/api/v1/upload", self.upload_file, ["POST"], "上传文件")
+        self.context.register_web_api("/api/v1/download/{file_id}", self.download_file, ["GET"], "下载文件")
+
     async def get_users(self):
         # 获取查询参数
         page = request.query.get("page", type=int, default=1)
@@ -275,8 +278,7 @@ class WebPlugin(Star):
             "limit": limit,
             "users": []
         })
-    
-    @filter.web_api("/api/v1/users", methods=["POST"])
+
     async def create_user(self):
         # 获取 JSON 体
         data = await request.json()
@@ -287,8 +289,7 @@ class WebPlugin(Star):
         # 创建用户逻辑...
         
         return json_response({"id": 1, "name": data["name"]}, status_code=201)
-    
-    @filter.web_api("/api/v1/upload", methods=["POST"])
+
     async def upload_file(self):
         # 获取上传文件
         files = await request.files()
@@ -301,8 +302,7 @@ class WebPlugin(Star):
         await file.save("/path/to/uploads/" + file.filename)
         
         return json_response({"status": "success", "filename": file.filename})
-    
-    @filter.web_api("/api/v1/download/{file_id}", methods=["GET"])
+
     async def download_file(self, file_id):
         # 获取路径参数
         file_path = f"/path/to/files/{file_id}.pdf"
@@ -320,7 +320,7 @@ class WebPlugin(Star):
 3. **路径参数**：通过处理函数的参数接收，如 `/api/v1/users/{id}` → `async def handler(id)`
 4. **文件上传**：使用 `await request.files()` 获取上传文件，然后用 `save()` 保存
 5. **响应类型**：`json_response`、`error_response`、`file_response`、`stream_response` 返回的都是 FastAPI/Starlette 的 Response 对象
-6. **注册方式**：使用 `@filter.web_api()` 装饰器注册 Web API 端点
+6. **注册方式**：在插件 `__init__` / `initialize` 中调用 `self.context.register_web_api(route, view_handler, methods, desc)` 注册 Web API 端点
 
 ---
 
@@ -329,14 +329,14 @@ class WebPlugin(Star):
 虽然不在 `api.web` 模块中，但需要配合使用：
 
 ```python
-@filter.web_api(path, methods=["GET", "POST"])
+self.context.register_web_api(route, view_handler, methods, desc)
 ```
 
 **参数**：
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `path` | `str` | API 路径，支持路径参数如 `/users/{id}` |
+| `route` | `str` | API 路径，支持路径参数如 `/users/{id}` |
+| `view_handler` | 异步函数 | 处理请求的视图函数 |
 | `methods` | `list[str]` | HTTP 方法列表 |
-
-**注意**：需要从 `astrbot.api.event import filter` 导入。
+| `desc` | `str` | API 描述 |

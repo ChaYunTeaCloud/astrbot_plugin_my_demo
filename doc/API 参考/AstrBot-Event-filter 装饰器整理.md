@@ -177,37 +177,37 @@
 
 ### 2.1 命令处理
 
-- `@filter.command(name, sub_command, alias)`
+- `@filter.command(command_name, sub_command, alias)`
   - 参数：
-    - `name`: 命令名称（如 `"hello"`）
+    - `command_name`: 命令名称（如 `"hello"`）
     - `sub_command`: 子命令名称（用于命令组）
     - `alias`: 命令别名集合
   - 触发时机：用户发送匹配的命令时
   - 传入参数：只有 `event`
   - 示例：
     ```python
-    @filter.command(name="hello")
+    @filter.command(command_name="hello")
     async def hello_handler(self, event: AstrMessageEvent):
         await event.send("Hello!")
     ```
 
-- `@filter.command_group(name, sub_command, alias)`
+- `@filter.command_group(command_group_name, sub_command, alias)`
   - 用于注册命令组，支持级联注册子命令
   - 示例：
     ```python
-    @filter.command_group(name="admin")
+    @filter.command_group(command_group_name="admin")
     async def admin_group(self):
         pass
 
-    @admin_group.command(name="ban")
+    @admin_group.command(command_name="ban")
     async def ban_user(self, event: AstrMessageEvent):
         pass
     ```
 
 ### 2.2 正则匹配
 
-- `@filter.regex(pattern)`
-  - 参数：`pattern` 正则表达式字符串或 Pattern 对象
+- `@filter.regex(regex)`
+  - 参数：`regex` 正则表达式字符串或 Pattern 对象
   - 触发时机：消息内容匹配正则时
   - 传入参数：只有 `event`
   - 示例：
@@ -223,13 +223,13 @@
   - 参数：`EventMessageType` 枚举值
   - 可用值：
     - `EventMessageType.ALL` — 所有消息
-    - `EventMessageType.GROUP` — 群消息
-    - `EventMessageType.PRIVATE` — 私聊消息
+    - `EventMessageType.GROUP_MESSAGE` — 群消息
+    - `EventMessageType.PRIVATE_MESSAGE` — 私聊消息
   - 示例：
     ```python
     from astrbot.api.event.filter import EventMessageType
 
-    @filter.event_message_type(EventMessageType.GROUP)
+    @filter.event_message_type(EventMessageType.GROUP_MESSAGE)
     async def handle_group(self, event: AstrMessageEvent):
         pass
     ```
@@ -239,15 +239,15 @@
 - `@filter.platform_adapter_type(platform_type)`
   - 参数：`PlatformAdapterType` 枚举值
   - 可用值：
-    - `PlatformAdapterType.AIOCIHTTP`
-    - `PlatformAdapterType.GOCQ`
+    - `PlatformAdapterType.AIOCQHTTP`
+    - `PlatformAdapterType.QQOFFICIAL`
     - `PlatformAdapterType.DISCORD`
     - 等等（根据实际支持的平台）
   - 示例：
     ```python
     from astrbot.api.event.filter import PlatformAdapterType
 
-    @filter.platform_adapter_type(PlatformAdapterType.AIOCIHTTP)
+    @filter.platform_adapter_type(PlatformAdapterType.AIOCQHTTP)
     async def handle_aiocqhttp(self, event: AstrMessageEvent):
         pass
     ```
@@ -260,7 +260,6 @@
     - `raise_error`: 无权限时是否报错，默认 True
   - 可用值：
     - `PermissionType.ADMIN` — 管理员
-    - `PermissionType.OWNER` — 超级管理员
     - `PermissionType.MEMBER` — 普通成员
   - 示例：
     ```python
@@ -312,16 +311,19 @@
 
 ### 4.1 注册 Agent
 
-- `@filter.agent(name, instruction, tools, run_hooks)`
+- `@agent(name, instruction, tools, run_hooks)`
   - 参数：
     - `name`: Agent 名称
     - `instruction`: Agent 指令
     - `tools`: 工具列表（字符串或 FunctionTool）
     - `run_hooks`: 运行时钩子
   - 用途：注册一个可被 LLM 通过 handoff 调用的 Agent
+  - 说明：`agent` 不在 `filter` 命名空间中，需 `from astrbot.api import agent` 导入
   - 示例：
     ```python
-    @filter.agent(name="code_assistant", instruction="你是一个代码助手")
+    from astrbot.api import agent
+
+    @agent(name="code_assistant", instruction="你是一个代码助手")
     async def code_agent_handler(self, event: AstrMessageEvent):
         pass
     ```
@@ -333,9 +335,9 @@
 多个装饰器可以叠加使用，消息必须同时满足所有条件：
 
 ```python
-@filter.command(name="admin")
+@filter.command(command_name="admin")
 @filter.permission_type(PermissionType.ADMIN)
-@filter.event_message_type(EventMessageType.GROUP)
+@filter.event_message_type(EventMessageType.GROUP_MESSAGE)
 async def admin_group_only(self, event: AstrMessageEvent):
     pass
 ```

@@ -31,14 +31,14 @@
 
 ### 2.1 入口
 
-[astr_main_agent.py](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py) 中的 `build_initial_request` 是 MainAgent 构建的核心入口（由 Pipeline 的 `LLMRequestBuildStage` 调用）。
+[astr_main_agent.py](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py) 中的 `build_main_agent` 是 MainAgent 构建的核心入口（由 Pipeline 的 `InternalAgentSubStage.process` 调用，见 core/pipeline/process_stage/method/agent_sub_stages/internal.py L231-L236）。
 
 ### 2.2 工具集构建流程（按顺序）
 
 #### Step 1: 初始化基础工具集
 
 ```python
-# L562-L566
+# L599/L603
 tmgr = plugin_context.get_llm_tool_manager()
 persona_toolset = tmgr.get_full_tool_set()  # 包含 func_list 中所有工具
 ```
@@ -46,13 +46,12 @@ persona_toolset = tmgr.get_full_tool_set()  # 包含 func_list 中所有工具
 `get_full_tool_set()` 返回 `func_list` 中的所有工具：
 - ✅ 插件注册的工具（`@llm_tool`）
 - ✅ MCP 工具
-- ✅ 前置处理工具（如 `astrbot_summary_tool`）
 - ❌ 不包含 `builtin_func_list` 中的系统内置工具
 
 #### Step 2: Persona 工具过滤
 
 ```python
-# L564-L580
+# L602-L617
 if (persona and persona.get("tools") is None) or not persona:
     # Persona 未指定工具 → 使用全量 func_list
     persona_toolset = tmgr.get_full_tool_set()
@@ -67,7 +66,7 @@ else:
 #### Step 3: SubAgent Handoff 工具注入
 
 ```python
-# L620-L625
+# L661-L663
 if req.func_tool is None:
     req.func_tool = ToolSet()
 for tool in so.handoffs:
@@ -77,7 +76,7 @@ for tool in so.handoffs:
 #### Step 4: Skill 注入
 
 ```python
-# L530-L555
+# L566-L592
 skill_manager = SkillManager()
 skills = skill_manager.list_skills(active_only=True, runtime=runtime)
 skills = _filter_skills_for_current_config(skills, cfg)
@@ -88,7 +87,7 @@ req.system_prompt += f"\n{build_skills_prompt(skills)}\n"
 #### Step 5: 文件提取工具
 
 ```python
-# L1557-L1561
+# L1596
 if config.file_extract_enabled:
     await _apply_file_extract(event, req, config)
 ```
@@ -96,21 +95,21 @@ if config.file_extract_enabled:
 #### Step 6: 插件工具过滤
 
 ```python
-# L1578
+# L1615
 _plugin_tool_fix(event, req)  # 根据会话过滤插件工具
 ```
 
 #### Step 7: 知识库工具
 
 ```python
-# L1573
+# L1610
 await _apply_kb(event, req, plugin_context, config)
 ```
 
 #### Step 8: 网络搜索工具注入
 
 ```python
-# L1579
+# L1616
 await _apply_web_search_tools(event, req, plugin_context)
 ```
 
@@ -119,7 +118,7 @@ await _apply_web_search_tools(event, req, plugin_context)
 #### Step 9: 运行时计算工具注入
 
 ```python
-# L1584-L1587
+# L1621-L1624
 if config.computer_use_runtime == "sandbox":
     _apply_sandbox_tools(config, req, req.session_id)
 elif config.computer_use_runtime == "local":
@@ -130,13 +129,13 @@ elif config.computer_use_runtime == "local":
 
 | Local Runtime | Sandbox Runtime |
 |---------------|-----------------|
-| `ExecuteShellTool` | `ExecuteShellTool` |
-| `LocalPythonTool` | `PythonTool` |
-| `FileReadTool` | `FileUploadTool` |
-| `FileWriteTool` | `FileDownloadTool` |
-| `FileEditTool` | `FileReadTool` |
-| `GrepTool` | `FileWriteTool` |
-| | `FileEditTool` |
+| `LocalExecuteShellTool` | `ExecuteShellTool` |
+| `ShellSessionTool` | `PythonTool` |
+| `LocalPythonTool` | `FileUploadTool` |
+| `FileReadTool` | `FileDownloadTool` |
+| `FileWriteTool` | `FileReadTool` |
+| `FileEditTool` | `FileWriteTool` |
+| `GrepTool` | `FileEditTool` |
 | | `GrepTool` |
 | | `BrowserExecTool` |
 | | `RunBrowserSkillTool` |
@@ -152,7 +151,7 @@ elif config.computer_use_runtime == "local":
 #### Step 11: 主动消息工具
 
 ```python
-# L1598-L1605
+# L1635-L1642
 if event.platform_meta.support_proactive_message:
     req.func_tool.add_tool(
         plugin_context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool)
@@ -161,14 +160,14 @@ if event.platform_meta.support_proactive_message:
 
 #### Step 12: 群消息历史工具注入
 
-当配置启用时，MainAgent 会注入 `GetGroupMessageHistoryTool`（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1616-L1620`），允许 LLM 获取群聊历史消息。
+当配置启用时，MainAgent 会注入 `GetGroupMessageHistoryTool`（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1648-L1657`），允许 LLM 获取群聊历史消息。
 
 #### LLM 安全模式注入
 
-在 MainAgent 请求构建过程中，框架会根据配置注入 LLM 安全模式提示词（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1115-L1122`）：
+在 MainAgent 请求构建过程中，框架会根据配置注入 LLM 安全模式提示词（`../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1140`）：
 
 - 当 `config.safety_mode_strategy == "system_prompt"` 时，会在 system_prompt 前面添加 `LLM_SAFETY_MODE_SYSTEM_PROMPT`
-- 该功能通过 `_apply_llm_safety_mode()` 实现，在 `build_main_agent` 中调用（`#L1581-L1582`）
+- 该功能通过 `_apply_llm_safety_mode()` 实现，在 `build_main_agent` 中调用（`#L1618-L1619`）
 
 ### 2.3 MainAgent 最终工具构成
 
@@ -187,7 +186,7 @@ MainAgent 工具集 =
 ### 2.4 MainAgent 执行方式
 
 ```python
-# L1677-L1703
+# L1714 起
 agent_runner.reset(
     provider=provider,
     request=req,
@@ -230,6 +229,8 @@ AstrBot 构建 MainAgent 请求涉及 4 个核心文件，按调用顺序：
 build_result = await build_main_agent(event, plugin_context, config)
 agent_runner = build_result.agent_runner
 req = build_result.provider_request
+provider = build_result.provider
+reset_coro = build_result.reset_coro
 ```
 
 ### 3.2 MainAgent 构建（核心）
@@ -244,7 +245,7 @@ req = build_result.provider_request
 
 ### 3.3 AgentRunner 配置与执行
 
-[astr_main_agent.py#L1677-L1703](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1677-L1703)
+[astr_main_agent.py#L1714-L1744](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1714-L1744)
 
 ```python
 agent_runner.reset(
@@ -257,12 +258,14 @@ agent_runner.reset(
 )
 ```
 
-### 3.4 AgentRunner.run() 执行
+### 3.4 AgentRunner.step_until_done() 执行
 
-`AgentRunner.run()` 内部会触发：
+`AgentRunner.step_until_done()`（由 `run_agent()` 包装调用）内部会触发：
 - `on_agent_begin` 钩子 → 调用所有注册的 `@on_agent_begin` 事件
 - `on_tool_start` / `on_tool_end` → 工具调用前后
 - `on_agent_done` / `on_llm_response` → Agent 完成后
+
+这些钩子由 `MainAgentHooks`（core/astr_agent_hooks.py）注入到 `agent_runner.reset()`。
 
 ---
 

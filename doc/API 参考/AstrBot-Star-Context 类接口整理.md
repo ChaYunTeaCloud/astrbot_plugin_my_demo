@@ -15,6 +15,8 @@ Context 是一个典型的"上帝类"——方法超过 50 个，涉及 LLM 调�
 
 ## 一、LLM 调用
 
+> 注意：`llm_generate` 与 `tool_loop_agent` 的签名均带 `*`（keyword-only），所有参数必须使用关键字传参。
+
 - `llm_generate(chat_provider_id, prompt, image_urls, audio_urls, tools, system_prompt, contexts, **kwargs)`
   - 直接调用指定 Provider 的 LLM 生成响应。不会自动执行工具调用，需用 `tool_loop_agent()` 实现 Agent 循环
   - 参数：
@@ -45,12 +47,15 @@ Context 是一个典型的"上帝类"——方法超过 50 个，涉及 LLM 调�
 
 - `get_using_provider(umo)`
   - 获取当前正在使用的聊天模型 Provider
+  - 已废弃（@deprecated），推荐使用 `get_using_provider_async(umo)`
 
 - `get_using_tts_provider(umo)`
   - 获取当前正在使用的 TTS Provider
+  - 已废弃（@deprecated），推荐使用 `get_using_tts_provider_async(umo)`
 
 - `get_using_stt_provider(umo)`
   - 获取当前正在使用的 STT Provider
+  - 已废弃（@deprecated），推荐使用 `get_using_stt_provider_async(umo)`
 
 - `get_current_chat_provider_id(umo)`
   - 获取当前使用的聊天模型 ID（字符串）
@@ -88,9 +93,11 @@ Context 是一个典型的"上帝类"——方法超过 50 个，涉及 LLM 调�
 
 - `activate_llm_tool(name)`
   - 激活指定名称的工具（默认已激活）
+  - 已废弃（@deprecated），推荐使用 `activate_llm_tool_async(name)`
 
 - `deactivate_llm_tool(name)`
   - 停用指定名称的工具
+  - 已废弃（@deprecated），推荐使用 `deactivate_llm_tool_async(name)`
 
 - ~~`register_llm_tool(name, func_args, desc, func_obj)`~~
   - 已弃用，改用 `@llm_tool` 装饰器
@@ -195,7 +202,7 @@ Context 是一个典型的"上帝类"——方法超过 50 个，涉及 LLM 调�
 resp = await self.context.llm_generate(chat_provider_id="xxx", prompt="你好")
 
 # 发消息
-await self.context.send_message(event.unified_msg_origin, MessageChain().add("文本内容"))
+await self.context.send_message(event.unified_msg_origin, MessageChain().message("文本内容"))
 
 # 取配置
 cfg = self.context.get_config()
@@ -204,5 +211,5 @@ cfg = self.context.get_config()
 platform = self.context.get_platform_inst(event.get_platform_id())
 
 # 获取当前 Provider
-provider = self.context.get_using_provider(event.unified_msg_origin)
+provider = await self.context.get_using_provider_async(event.unified_msg_origin)
 ```

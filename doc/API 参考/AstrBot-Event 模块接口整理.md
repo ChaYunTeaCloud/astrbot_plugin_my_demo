@@ -134,7 +134,7 @@
 
 ### 1.9 LLM 请求构建
 
-- `request_llm(prompt, system_prompt, image_urls, audio_urls, tool_set, contexts, conversation, session_id) -> ProviderRequest`
+- `request_llm(prompt, func_tool_manager=None, tool_set=None, session_id="", image_urls=None, audio_urls=None, contexts=None, system_prompt="", conversation=None) -> ProviderRequest`
   - 构建一个 LLM 请求对象，用于交给 Pipeline 处理
   - 常用参数：
     - `prompt`: 提示词
@@ -143,6 +143,7 @@
     - `tool_set`: 工具集（`ToolSet`）
     - `contexts`: 多轮对话历史
     - `conversation`: 指定对话（含人格设定）
+    - `func_tool_manager`: 已废弃，请使用 `tool_set` 参数代替
 
 ### 1.10 额外数据
 
@@ -164,7 +165,7 @@
 ### 1.12 使用示例
 
 ```python
-@filter.command(name="hello")
+@filter.command(command_name="hello")
 async def hello_handler(self, event: AstrMessageEvent):
     # 获取消息内容
     text = event.get_message_str()
@@ -352,7 +353,7 @@ AstrMessageEvent（基类，通用方法）
 |------|------|
 | `get_message_str()` | 获取纯文本消息 |
 | `get_messages()` | 获取消息组件列表 |
-| `get_sender()` | 获取发送者信息 |
+| `get_sender_id()` / `get_sender_name()` | 获取发送者 ID / 昵称（也可用 `message_obj.sender`） |
 | `get_group()` | 获取群信息 |
 | `get_platform_name()` | 获取平台名称 |
 | `make_result()` | 创建消息结果 |
@@ -369,18 +370,21 @@ AstrMessageEvent（基类，通用方法）
 
 ```python
 class AiocqhttpMessageEvent(AstrMessageEvent):
-    # QQ 特有方法
-    def get_reply_id(self) -> int | None:
-        """获取回复消息 ID"""
-    
-    def is_group_admin(self) -> bool:
-        """是否是群管理员"""
-    
-    def is_group_owner(self) -> bool:
-        """是否是群主"""
-    
-    # 还有更多平台特定属性
-    _raw_event: dict  # 原始 OneBot 事件数据
+    def __init__(self, ..., bot: CQHttp):
+        self.bot = bot  # aiocqhttp 机器人客户端
+
+    @staticmethod
+    async def send_message(bot, message_chain, event=None, is_group=False, session_id=None):
+        """发送消息至 QQ 协议端"""
+
+    async def send(self, message: MessageChain) -> None:
+        """发送消息"""
+
+    async def send_streaming(self, generator, use_fallback=False):
+        """发送流式消息"""
+
+    async def get_group(self, group_id=None, **kwargs):
+        """获取群信息"""
 ```
 
 ### Discord
@@ -414,7 +418,7 @@ async def handler(self, event: AstrMessageEvent):
     # event 的类型是 AstrMessageEvent，只能调用基类方法
     # 如果需要平台特定方法，需要类型断言
     if isinstance(event, AiocqhttpMessageEvent):
-        reply_id = event.get_reply_id()  # QQ 特有
+        bot = event.bot  # QQ 特有：CQHttp 客户端
 ```
 
 ### 方法二：检查平台名称
@@ -425,11 +429,11 @@ async def test(self, event):
     platform = event.get_platform_name()
     
     if platform == "aiocqhttp":
-        # QQ 平台，可以使用 QQ 特有方法
+        # QQ 平台，可以使用 QQ 特有属性
         # 但需要小心，因为 event 的类型还是 AstrMessageEvent
         # 需要通过 isinstance 判断或直接访问属性
-        if hasattr(event, 'is_group_admin'):
-            is_admin = event.is_group_admin()
+        if hasattr(event, 'bot'):
+            bot = event.bot
     
     elif platform == "discord":
         # Discord 平台
@@ -444,9 +448,9 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 @filter.command("admin")
 async def check_admin(self, event):
     if isinstance(event, AiocqhttpMessageEvent):
-        # 安全地调用 QQ 特有方法
-        is_admin = event.is_group_admin()
-        yield event.make_result().message(f"是否管理员: {is_admin}")
+        # 安全地访问 QQ 特有属性（如 bot 客户端）
+        bot = event.bot
+        yield event.make_result().message("已获取 QQ 平台 bot 客户端")
     else:
         yield event.make_result().message("此命令仅支持 QQ 平台")
 ```
@@ -461,7 +465,7 @@ async def get_info(self, event):
     info = []
     
     # 通用信息（所有平台）
-    sender = event.get_sender()
+    sender = event.message_obj.sender
     info.append(f"发送者: {sender.nickname}")
     
     group = event.get_group()
@@ -473,8 +477,9 @@ async def get_info(self, event):
         from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
         
         if isinstance(event, AiocqhttpMessageEvent):
-            info.append(f"是否管理员: {event.is_group_admin()}")
-            info.append(f"是否群主: {event.is_group_owner()}")
+            # QQ 特有属性：bot 客户端
+            bot = event.bot
+            info.append(f"已获取 bot 客户端: {bot}")
     
     elif platform == "discord":
         from astrbot.core.platform.sources.discord.discord_platform_event import DiscordPlatformEvent
@@ -611,7 +616,7 @@ async def test(self, event):
     # 通用方法（所有平台都能用）
     await event.send(event.make_result().message("Hello"))
     
-    # 平台特定方法（需要 isinstance 判断）
+    # 平台特定属性（需要 isinstance 判断）
     if isinstance(event, AiocqhttpMessageEvent):
-        is_admin = event.is_group_admin()  # QQ 特有
+        bot = event.bot  # QQ 特有
 ```

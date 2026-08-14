@@ -19,14 +19,14 @@
 
 ## register 装饰器说明
 
-`register` 里的所有装饰器**都开放给插件开发者使用**，只是**不通过 `astrbot.api.star.register` 暴露**。
+`core/star/register/__init__.py` 的 `__all__` 共 24 个导出，其中大部分重命名后通过 `filter` 命名空间暴露给插件开发者；`register_agent` 走 `api.agent`，`register_star` 走 `api.star.register`，二者不导出到 `filter`。
 
 看 `filter/__init__.py` 的导入方式：
 
 ```python
 from astrbot.core.star.register import register_command as command
 from astrbot.core.star.register import register_on_llm_request as on_llm_request
-# ... 共 28 个装饰器
+# ... core/star/register/__init__.py 的 __all__ 共 24 个导出
 ```
 
 也就是说：
@@ -38,7 +38,7 @@ from astrbot.core.star.register import register_on_llm_request as on_llm_request
 | `astrbot.core.star.register.register_llm_tool` | `astrbot.api.event.filter.llm_tool` |
 | ... | ... |
 
-框架把 `register` 里的所有装饰器**重命名后集中导出到 `filter` 命名空间**，这样做的好处是：
+框架把 `register` 里的大部分装饰器**重命名后集中导出到 `filter` 命名空间**，这样做的好处是：
 
 1. **API 路径稳定**：内部实现可以随时调整，对外的 `from astrbot.api.event import filter` 始终不变
 2. **职责清晰**：`register` 是内部实现模块，`filter` 是开发者接口
@@ -48,7 +48,7 @@ from astrbot.core.star.register import register_on_llm_request as on_llm_request
 ```python
 from astrbot.api.event import filter
 
-@filter.command(name="hello")
+@filter.command(command_name="hello")
 @filter.on_llm_request()
 @filter.llm_tool(name="weather")
 ```
@@ -170,7 +170,7 @@ class MyPlugin(Star):
         # 插件停用时执行
         pass
 
-    @filter.command(name="img")
+    @filter.command(command_name="img")
     async def text_to_img(self, event):
         url = await self.text_to_image("Hello World")
         yield event.image_result(url)
@@ -345,8 +345,8 @@ class MyPlugin(Star):
     async def terminate(self):
         pass
 
-    @filter.command(name="hello")
-    @filter.event_message_type(EventMessageType.PRIVATE)
+    @filter.command(command_name="hello")
+    @filter.event_message_type(EventMessageType.PRIVATE_MESSAGE)
     async def hello_handler(self, event: AstrMessageEvent):
         yield event.plain_result("你好！这是一个私聊回复。")
 

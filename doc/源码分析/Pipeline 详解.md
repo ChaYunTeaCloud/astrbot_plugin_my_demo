@@ -44,6 +44,8 @@ class EventBus:
     def __init__(self, event_queue, pipeline_scheduler_mapping, astrbot_config_mgr):
         self.event_queue = event_queue
         self.pipeline_scheduler_mapping = pipeline_scheduler_mapping
+        # 持有正在执行的 pipeline 任务的强引用, 防止 task 在 pending 状态被 GC 回收
+        self._pending_tasks: set[asyncio.Task] = set()
 
     async def dispatch(self) -> None:
         while True:
@@ -53,13 +55,20 @@ class EventBus:
             conf_id = conf_info["id"]
             # 查找对应的 PipelineScheduler
             scheduler = self.pipeline_scheduler_mapping.get(conf_id)
+            if not scheduler:
+                logger.error(f"PipelineScheduler not found for id: {conf_id}, event ignored.")
+                continue
             # 创建异步任务执行 pipeline
             task = asyncio.create_task(scheduler.execute(event))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._on_task_done)
 ```
 
 **关键特点**：
 - 每条消息创建一个独立的 `asyncio.Task`，互不阻塞
 - 根据 `unified_msg_origin`（格式：`平台ID:消息类型:session_id`）路由到对应配置的 Scheduler
+- 若找不到对应 Scheduler，记录 `logger.error` 并跳过该事件
+- 任务存入 `_pending_tasks` 强引用集合，完成/取消后由 `_on_task_done` 回调移除并暴露未捕获异常
 
 ### 2.2 PipelineScheduler（管道调度器）
 
@@ -77,11 +86,17 @@ class PipelineScheduler:
             if isinstance(coroutine, AsyncGenerator):
                 # 洋葱模型核心：yield 处暂停，递归执行后续所有 Stage
                 async for _ in coroutine:
+                    if event.is_stopped():
+                        break
                     await self._process_stages(event, i + 1)
                     # 后续 Stage 完成后回到此处，继续执行当前 Stage 的后置逻辑
+                    if event.is_stopped():
+                        break
             else:
                 # 普通协程：执行完成后继续下一个 Stage
                 await coroutine
+                if event.is_stopped():
+                    break
 ```
 
 **洋葱模型示意**：
@@ -116,7 +131,7 @@ class Stage(abc.ABC):
         """初始化阶段，在 Pipeline 启动时调用"""
 
     async def process(self, event: AstrMessageEvent) -> None | AsyncGenerator[None]:
-        """处理事件。返回 AsyncGenerator 实现洋葱模型，返回 None 则终止后续 Stage"""
+        """处理事件。返回 AsyncGenerator 实现洋葱模型，返回 None 表示普通协程（无洋葱模型），await 后继续下一 Stage；终止传播依赖 event.stop_event()/is_stopped()"""
 ```
 
 ### 2.4 PipelineContext（管道上下文）
@@ -129,6 +144,8 @@ class PipelineContext:
     astrbot_config: AstrBotConfig  # AstrBot 全局配置
     plugin_manager: PluginManager  # 插件管理器
     astrbot_config_id: str
+    call_handler = call_handler        # 类属性，指向 context_utils.call_handler
+    call_event_hook = call_event_hook  # 类属性，指向 context_utils.call_event_hook
 ```
 
 ---
@@ -144,19 +161,19 @@ class PipelineContext:
 **功能**：判断是否唤醒机器人，匹配哪些插件 Handler 该执行。
 
 **关键逻辑**：
-1. 检查唤醒条件（第 102-148 行）：
+1. 检查唤醒条件（第 106-152 行）：
    - 消息以 `wake_prefix` 开头（如 `/`、`bot` 等）
    - @机器人 或 @全体成员
    - 引用了机器人的消息
    - 私聊消息
 
-2. 匹配插件 Handler（第 150-239 行）：
+2. 匹配插件 Handler（第 154-242 行）：
    - 遍历 `star_handlers_registry` 中注册的所有 Handler
    - 对每个 Handler 的 `event_filters` 进行 AND 逻辑匹配
    - Filter 类型：`CommandFilter`、`RegexFilter`、`PermissionTypeFilter`、`PlatformTypeFilter` 等
    - 匹配成功的 Handler 加入 `activated_handlers` 列表
 
-3. 存储结果到 event（第 238-239 行）：
+3. 存储结果到 event（第 244-245 行）：
    ```python
    event.set_extra("activated_handlers", activated_handlers)
    event.set_extra("handlers_parsed_params", handlers_parsed_params)
@@ -313,7 +330,7 @@ async def dispatch(self) -> None:
 
 ### 步骤 7：发送回复
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/pipeline/respond/stage.py#L169
+**文件**：../.venv/Lib/site-packages/astrbot/core/pipeline/respond/stage.py#L173（process 定义在 L169）
 
 ```python
 result = event.get_result()

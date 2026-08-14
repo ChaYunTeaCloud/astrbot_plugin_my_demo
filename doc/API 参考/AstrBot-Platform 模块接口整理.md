@@ -51,7 +51,7 @@ def __init__(
 - `event.message_obj` 拿到原始消息对象
 - `event.platform_meta` 拿到平台元信息
 
-而 `event.get_sender()`、`event.get_group()` 这些快捷方法，本质上就是访问 `self.message_obj.sender`、`self.message_obj.group`。
+而 `event.get_sender_id()`、`event.get_sender_name()`、`event.get_group()` 这些快捷方法，本质上就是访问 `self.message_obj.sender`、`self.message_obj.group`。
 
 ---
 
@@ -64,7 +64,7 @@ def __init__(
 - `Plain(text: str)`
   - 纯文本消息
 
-- `Image(image: str)`
+- `Image(file: str | None)`
   - 图片消息，支持 URL、本地路径、base64、file:// 四种格式
 
 - `Record(file: str)`
@@ -73,8 +73,8 @@ def __init__(
 - `Video(file: str)`
   - 视频消息
 
-- `File(file: str)`
-  - 文件附件
+- `File(name: str, file="", url="")`
+  - 文件附件（name 必填）
 
 ### 1.2 IM 平台特有组件
 
@@ -87,8 +87,8 @@ def __init__(
 - `AtAll()`
   - @所有人
 
-- `Poke(poke: str)`
-  - 戳一戳
+- `Poke(poke_type=None)`
+  - 戳一戳（字段为 `_type` / `id`）
 
 - `Reply(id: str)`
   - 回复消息
@@ -96,10 +96,10 @@ def __init__(
 - `Forward(id: str)`
   - 转发消息
 
-- `Node(id: str)`
-  - 合并转发中的单个节点
+- `Node(content: list[BaseMessageComponent])`
+  - 合并转发中的单个节点（content 必填）
 
-- `Nodes(items: list[Node])`
+- `Nodes(nodes: list[Node])`
   - 合并转发
 
 ### 1.3 其他组件
@@ -113,23 +113,23 @@ def __init__(
 - `Shake()`
   - 抖动
 
-- `Share(url: str)`
-  - 分享链接
+- `Share(url: str, title: str)`
+  - 分享链接（url 和 title 都必填）
 
-- `Contact(qq: str)`
-  - 分享名片
+- `Contact(_type: str, id: int | None = 0)`
+  - 分享名片（`_type` 必填）
 
-- `Location(latitude: float, longitude: float, title: str)`
-  - 位置
+- `Location(lat: float, lon: float, title="", content="")`
+  - 位置（lat/lon 必填）
 
-- `Music(title: str, url: str)`
-  - 音乐
+- `Music(_type: str, id=0, url="", audio="", title="", content="", image="")`
+  - 音乐（`_type` 必填）
 
 - `Json(data: str)`
   - JSON 消息
 
-- `Unknown()`
-  - 未知消息类型
+- `Unknown(text: str)`
+  - 未知消息类型（text 必填）
 
 ### 1.4 ComponentType（组件类型枚举）
 
@@ -247,7 +247,7 @@ def __init__(
   - 返回平台的运行协程，由框架 `asyncio.create_task()` 调度
   - 必须由子类实现
 
-- `terminate() -> None`
+- `async terminate() -> None`
   - 终止平台运行
   - 子类可覆盖实现清理逻辑
 
@@ -418,7 +418,7 @@ class MyPlatform(Platform):
 
 `@dataclass`，用于唯一标识一个消息会话，支持 `Platform.send_by_session()`。
 
-- `platform_name: str` — 平台适配器实例标识
+- `platform_name: str` — 平台适配器实例标识（自 v4.0.0 起，该字段实际为 platform_id）
 - `message_type: MessageType` — 消息类型
 - `session_id: str` — 会话 ID
 - `from_str(session_str: str)`（静态方法）— 从字符串解析
@@ -456,5 +456,5 @@ astrbot.api.platform
 
 - **日常开发**：你主要通过 `event`（AstrMessageEvent）和 `context` 与框架交互，不需要直接接触 Platform
 - **消息构建**：使用 `Plain`、`Image` 等组件构建回复消息链
-- **高级场景**：`event.get_sender()` 返回 `MessageMember`，`event.get_group()` 返回 `Group`
+- **高级场景**：`event.message_obj.sender` 返回 `MessageMember`，`event.get_group()` 返回 `Group`
 - **适配器开发**：如果你想接入新的 IM 平台（如自建聊天系统），才需要继承 `Platform` 并使用 `register_platform_adapter`

@@ -57,12 +57,12 @@ SubAgent（子智能体）是 AstrBot 中的**任务委派机制**。你可以�
         │
         └── 走 _execute_local 分支（#L182）
             │
-            ├── 判断执行方式（#L640-652）
-            │   ├── tool.handler 存在 → 调用 handler(event, **kwargs)（#L733-734）
-            │   ├── 重写了 tool.call() → 调用 tool.call(context, **kwargs)（#L735-736）
+            ├── 判断执行方式（#L646-654）
+            │   ├── tool.handler 存在 → 调用 handler(event, **kwargs)（#L738）
+            │   ├── 重写了 tool.call() → 调用 tool.call(context, **kwargs)（#L740）
             │   └── 有 run() 方法 → 调用 tool.run(event, **kwargs)
             │
-            ├── 处理返回值（call_local_llm_tool #L780-808）
+            ├── 处理返回值（call_local_llm_tool #L718）
             │   ├── 返回 MessageEventResult → event.set_result(ret) + yield None
             │   ├── 返回 str/None → 直接 yield 给 Agent Loop
             │   └── 异步生成器 → 逐步 yield，每个 MessageEventResult 直接发给用户
@@ -278,6 +278,8 @@ HandoffTool 的 `default_parameters()` 包含三个参数（`../.venv/Lib/site-p
 
 **文件**：../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py
 
+> 注意：`SubAgentOrchestrator` 位于 `core/subagent_orchestrator.py`，而 `HandoffTool` 才在 `core/agent/handoff.py`，两者分处不同文件。
+
 负责从配置加载子 Agent 定义并创建 HandoffTool 列表。
 
 ```python
@@ -360,8 +362,14 @@ class MyPlugin(Star):
 
 ```python
 def register_agent(name, instruction, tools=None, run_hooks=None):
+    tools_ = tools or []  # None 会被转成 []（无工具），并非继承主 Agent 全部工具
     def decorator(awaitable):
-        agent = Agent(name=name, instructions=instruction, tools=tools)
+        agent = Agent(
+            name=name,
+            instructions=instruction,
+            tools=tools_,
+            run_hooks=run_hooks or BaseAgentRunHooks[Any](),
+        )
         handoff_tool = HandoffTool(agent=agent)
         handoff_tool.handler = awaitable  # handler 绑定到装饰器函数
         llm_tools.func_list.append(handoff_tool)  # 直接加到全局工具列表
@@ -414,8 +422,10 @@ if isinstance(tool, HandoffTool):
 4. 调用 tool_loop_agent 启动子 Agent 对话
    ├── system_prompt = agent.instructions
    ├── prompt = input_
+   ├── image_urls = image_urls（从参数 + 当前消息中收集）
    ├── tools = 构建的工具集
    ├── contexts = 预设对话
+   ├── stream = stream（由 provider_settings.streaming_response 决定）
    └── 最多执行 max_steps 步
 
 5. 返回结果
@@ -525,7 +535,7 @@ async def ask_weather(self, event):
     # 准备预设对话（可选）
     contexts = None
     if agent.begin_dialogs:
-        from astrbot.core.platform.sources.astrbot.message.event import Message
+        from astrbot.core.agent.message import Message
         contexts = []
         for dialog in agent.begin_dialogs:
             contexts.append(
@@ -622,17 +632,17 @@ weather SubAgent **不需要** `on_llm_request` 钩子，因为它的工具集�
 主 Agent 调用 HandoffTool
   → _execute_handoff (../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L305)
     → _build_handoff_toolset() 构建工具集
-    → ctx.tool_loop_agent() (../.venv/Lib/site-packages/astrbot/core/star/context.py#L214)
-      → 直接构造 ProviderRequest (context.py#L278-285)
-      → 直接调用 ToolLoopAgentRunner (context.py#L291-320)
-      → 直接调用 provider.text_chat() (tool_loop_agent_runner.py#L482)
+    → ctx.tool_loop_agent() (../.venv/Lib/site-packages/astrbot/core/star/context.py#L215)
+      → 直接构造 ProviderRequest (context.py#L279-286)
+      → 直接调用 ToolLoopAgentRunner (context.py#L310-321)
+      → 直接调用 provider.text_chat() (tool_loop_agent_runner.py#L529)
       → 不触发任何 Pipeline 钩子
 ```
 
 源码位置：
 - `../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L305-L377` — `_execute_handoff` 方法
-- `../.venv/Lib/site-packages/astrbot/core/star/context.py#L214-322` — `tool_loop_agent` 方法
-- `../.venv/Lib/site-packages/astrbot/core/agent/runners/tool_loop_agent_runner.py#L462-482` — `_iter_llm_responses` 方法
+- `../.venv/Lib/site-packages/astrbot/core/star/context.py#L215-322` — `tool_loop_agent` 方法
+- `../.venv/Lib/site-packages/astrbot/core/agent/runners/tool_loop_agent_runner.py#L500` — `_iter_llm_responses` 方法
 
 **这意味着**：
 - 在 `on_llm_request` 中做的工具注入、请求修改等操作，**只对主 Agent 生效**
@@ -1187,15 +1197,14 @@ tool_mgr.get_builtin_tool(BrowserBatchExecTool)
 
 | 工具类别 | MainAgent | SubAgent | 缺失数量 |
 |---------|-----------|----------|---------|
-| 沙箱基础工具集 | ✅ | ✅（通过 `runtime_computer_tools`） | 0 |
-| Skill 工具（3 个） | ✅ | ❌ | 3 |
-| Skill 管理工具（7 个） | ✅ | ❌ | 7 |
-| 网页搜索工具（7 个） | ✅ | ❌ | 7 |
+| 沙箱/本地基础工具集 | ✅ | ✅（通过 `runtime_computer_tools`，取决于 `computer_use_runtime`） | 0 |
+| CUA 工具（3 个） | ✅（仅 `sandbox.booter=cua` 时） | ⚠️ 仅 `sandbox.booter=cua` 时注入 | 取决于 booter |
+| Skill 工具（11 个：GetExecutionHistoryTool、AnnotateExecutionTool、CreateSkillPayloadTool、GetSkillPayloadTool、CreateSkillCandidateTool、ListSkillCandidatesTool、EvaluateSkillCandidateTool、PromoteSkillCandidateTool、ListSkillReleasesTool、RollbackSkillReleaseTool、SyncSkillReleaseTool） | ✅（仅 `booter=shipyard_neo` 时） | ❌（`_build_handoff_toolset` 未注入） | 11（仅 shipyard_neo 时） |
+| 浏览器工具（`BrowserExecTool` / `BrowserBatchExecTool`；`RunBrowserSkillTool` 属"运行浏览器 Skill"工具） | ✅ | ❌ | 取决于配置 |
+| 网页搜索工具 | ✅ | ❌ | 取决于配置 |
 | FutureTaskTool | ✅ | ❌ | 1 |
-| CUA 工具（3 个） | ✅ | ❌ | 3 |
-| 浏览器工具（3 个） | ✅ | ❌ | 3 |
 | 插件/MCP 工具 | ✅ | ✅（通过 `get_full_tool_set()`） | 0 |
-| **总计缺失** | | | **24 个** |
+| **总计缺失** | | | **取决于 runtime/booter 配置** |
 
 ### GitHub 状态
 

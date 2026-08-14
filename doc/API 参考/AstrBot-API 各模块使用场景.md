@@ -55,8 +55,7 @@
 4. **自定义筛选器**
    ```python
    @filter.regex(r"^weather\s+(.*)")
-   async def weather_query(self, event, match):
-       city = match.group(1)
+   async def weather_query(self, event):
        ...
    ```
 
@@ -93,8 +92,8 @@
    ```python
    from astrbot.api.star import StarTools
 
-   data_dir = StarTools.get_data_dir(self)
-   await StarTools.send_message(event, "Hello")
+   data_dir = StarTools.get_data_dir(plugin_name="my_plugin")
+   await StarTools.send_message(event.unified_msg_origin, MessageChain().message("Hello"))
    ```
 
 3. **获取配置**
@@ -250,7 +249,9 @@
    ```python
    from astrbot.api.web import request, json_response, error_response
 
-   @filter.web_api("/api/v1/users", methods=["GET"])
+   # 在插件 __init__ / initialize 中注册
+   self.context.register_web_api("/api/v1/users", self.get_users, ["GET"], "获取用户列表")
+
    async def get_users(self):
        page = request.query.get("page", type=int, default=1)
        return json_response({"page": page, "users": []})
@@ -258,7 +259,8 @@
 
 2. **处理 POST 请求**
    ```python
-   @filter.web_api("/api/v1/users", methods=["POST"])
+   self.context.register_web_api("/api/v1/users", self.create_user, ["POST"], "创建用户")
+
    async def create_user(self):
        data = await request.json()
        if not data.get("name"):
@@ -268,7 +270,8 @@
 
 3. **文件上传**
    ```python
-   @filter.web_api("/api/v1/upload", methods=["POST"])
+   self.context.register_web_api("/api/v1/upload", self.upload, ["POST"], "上传文件")
+
    async def upload(self):
        files = await request.files()
        file = files.get("file")
@@ -281,7 +284,8 @@
    ```python
    from astrbot.api.web import file_response
 
-   @filter.web_api("/api/v1/download/{file_id}", methods=["GET"])
+   self.context.register_web_api("/api/v1/download/{file_id}", self.download, ["GET"], "下载文件")
+
    async def download(self, file_id):
        return file_response(f"/path/to/files/{file_id}.pdf")
    ```
@@ -336,26 +340,26 @@ class MyPlugin(Star):
 
 2. **直接调用 AI 能力**
    ```python
-   # 从 Context 获取 Provider
-   provider = context.provider_manager.get_using_provider(ProviderType.CHAT_COMPLETION)
+   # 从 Context 获取 Provider（同步 get_using_provider 已废弃，推荐 _async 版本）
+   provider = await context.provider_manager.get_using_provider_async(ProviderType.CHAT_COMPLETION)
    response = await provider.text_chat(prompt="你好", session_id="test")
    ```
 
 3. **使用嵌入/重排序能力**
    ```python
-   embedding = context.provider_manager.get_using_provider(ProviderType.EMBEDDING)
+   embedding = await context.provider_manager.get_using_provider_async(ProviderType.EMBEDDING)
    vectors = await embedding.get_embeddings(["文本1", "文本2"])
 
-   rerank = context.provider_manager.get_using_provider(ProviderType.RERANK)
+   rerank = await context.provider_manager.get_using_provider_async(ProviderType.RERANK)
    results = await rerank.rerank(query, documents, top_n=3)
    ```
 
 4. **使用 STT/TTS 能力**
    ```python
-   stt = context.provider_manager.get_using_provider(ProviderType.SPEECH_TO_TEXT)
+   stt = await context.provider_manager.get_using_provider_async(ProviderType.SPEECH_TO_TEXT)
    text = await stt.get_text(audio_url)
 
-   tts = context.provider_manager.get_using_provider(ProviderType.TEXT_TO_SPEECH)
+   tts = await context.provider_manager.get_using_provider_async(ProviderType.TEXT_TO_SPEECH)
    audio = await tts.get_audio("你好世界")
    ```
 
@@ -427,7 +431,7 @@ class AIPlugin(Star):
     @filter.command("embed")
     async def embed(self, event):
         text = event.message_str
-        provider = self._context.provider_manager.get_using_provider(ProviderType.EMBEDDING)
+        provider = await self._context.provider_manager.get_using_provider_async(ProviderType.EMBEDDING)
         vectors = await provider.get_embeddings([text])
         yield event.make_result().message(f"向量维度: {len(vectors[0])}")
 ```
@@ -465,7 +469,7 @@ class HookPlugin(Star):
 | 监听所有消息 | `filter.event_message_type()` |
 | 监听 LLM 请求/响应 | `filter.on_llm_request()` / `filter.on_llm_response()` |
 | 注册 LLM 工具 | `filter.llm_tool()` |
-| 访问发送者信息 | `event.get_sender()` |
+| 访问发送者信息 | `event.get_sender_id()` / `event.get_sender_name()`（或 `event.message_obj.sender`） |
 | 访问群信息 | `event.get_group()` |
 | 发送文本消息 | `event.make_result().message(text)` |
 | 发送图片 | `event.make_result().message(image=Image(url=...))` |
@@ -474,7 +478,7 @@ class HookPlugin(Star):
 | 获取插件配置 | `context.get_config(plugin_name)` |
 | 创建定时任务 | `self.context.cron_manager` |
 | 操作数据库 | `context.db` |
-| 调用 LLM | `context.provider_manager.get_using_provider()` |
+| 调用 LLM | `context.provider_manager.get_using_provider_async()` |
 | 开发平台适配器 | 继承 `Platform` + `register_platform_adapter` |
 | 开发 AI 适配器 | 继承 `Provider` + `register_provider_adapter` |
 
@@ -528,7 +532,7 @@ class HookPlugin(Star):
 
 - 日常插件开发：**偶尔用到**。需要提供 HTTP 接口时使用
 - 使用场景：
-  1. 提供 REST API（`@filter.web_api`）
+  1. 提供 REST API（`self.context.register_web_api()`）
   2. 处理 JSON 请求（`request.json()`）
   3. 文件上传（`request.files()`）
   4. 文件下载（`file_response()`）
@@ -562,7 +566,7 @@ class HookPlugin(Star):
 - 日常插件开发：**经常用到**。提供常用的工具类和装饰器
 - 使用场景：
   1. 日志记录（`logger.info()` / `logger.error()`）
-  2. 偏好设置存储（`sp.get_async()` / `sp.set_async()`）
+  2. 偏好设置存储（`sp.get_async()` / `sp.put_async()`）
   3. HTML 转图片（`html_renderer.render_t2i()`）
   4. 注册子 Agent（`@agent()`）
   5. 注册 LLM 工具（`@llm_tool()`）

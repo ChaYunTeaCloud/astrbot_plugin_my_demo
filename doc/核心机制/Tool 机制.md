@@ -4,7 +4,7 @@
 
 Tool（工具）是让 LLM（大语言模型）能够**调用外部功能**的机制。类似于 ChatGPT 的 Function Calling，你可以定义一个工具，告诉 LLM "当用户问天气时，可以调用这个工具来获取天气信息"。
 
-在 AstrBot 中，Tool 的本质是一个 `FunctionTool` 类。所有工具（包括内置工具、MCP 工具、插件工具）最终都是 `FunctionTool` 实例，存储在 `llm_tools.func_list` 中。
+在 AstrBot 中，Tool 的本质是一个 `FunctionTool` 类。所有工具最终都是 `FunctionTool` 实例：插件/MCP 工具存储在 `llm_tools.func_list` 中，内置工具按类缓存在 `llm_tools.builtin_func_list` 中。
 
 注册工具的方式：
 - 继承 `FunctionTool[AstrAgentContext]` 类：灵活，支持完整的 JSON Schema 定义（官方推荐）
@@ -60,7 +60,7 @@ async def my_tool_handler(self, event: AstrMessageEvent, param1: str, param2: in
         param2: 业务参数2
     """
     # 可以通过 event 获取发送者、群信息等
-    sender = event.get_sender()
+    sender = event.message_obj.sender
     group_id = event.get_group_id()
     ...
     return "结果"
@@ -144,7 +144,7 @@ class MyPlugin(Star):
 框架会自动：
 1. 从装饰器参数中获取名称
 2. 从函数注释中解析参数描述
-3. 注册到 `star_handlers_registry`
+3. 注册到 `llm_tools.func_list`（`add_func`），事件 handler 才进 `star_handlers_registry`
 4. 在 LLM 请求时自动添加到工具集
 
 ### 方式二：继承 FunctionTool 类
@@ -559,7 +559,7 @@ class AstrAgentContext:
 
 `ContextWrapper` 是包裹 `AstrAgentContext` 的**外层容器**，额外提供了对话历史和超时控制功能。它是 Tool 的 `call` 方法实际接收的参数类型。
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/agent/run_context.py#L12
+**文件**：../.venv/Lib/site-packages/astrbot/core/agent/run_context.py#L13
 
 ```python
 @dataclass
@@ -614,7 +614,7 @@ NoContext = ContextWrapper[None]
 
 `FunctionTool` 同样使用了 `Generic[TContext]` 泛型设计，与 `ContextWrapper` 的思路完全一致。
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/agent/tool.py#L39
+**文件**：../.venv/Lib/site-packages/astrbot/core/agent/tool.py#L41
 
 ```python
 class FunctionTool(ToolSchema, Generic[TContext]):
@@ -837,20 +837,18 @@ if self._wrapped.handler is not None:
 
 ### 注册方式
 
-`@llm_tool` 装饰器会把 handler 注册为 `LLM_TOOL` 类型的 handler（文件：../.venv/Lib/site-packages/astrbot/core/star/register/star_handler.py#L586）：
+`@llm_tool` 装饰器会解析 docstring 构建参数 schema，并通过 `get_handler_or_create(awaitable, EventType.OnCallingFuncToolEvent)` 额外注册一个事件 handler，再调用 `llm_tools.add_func(...)` 把工具写入全局工具列表（文件：../.venv/Lib/site-packages/astrbot/core/star/register/star_handler.py#L585）：
 
 ```python
 def register_llm_tool(name: str | None = None, **kwargs):
     def decorator(awaitable):
-        # 解析 docstring，构建参数 schema
-        # 注册为 LLM_TOOL 类型的 handler
-        register_handler(
-            func,
-            handler_type=HandlerType.LLM_TOOL,
-            name=name,
-            desc=desc,
-        )
-        return func
+        # 解析 docstring，构建参数 schema（args）
+        # ...
+        # 额外注册 OnCallingFuncToolEvent 事件 handler
+        md = get_handler_or_create(awaitable, EventType.OnCallingFuncToolEvent)
+        # 把工具写入全局工具列表（func_list）
+        llm_tools.add_func(llm_tool_name, args, doc_desc, md.handler)
+        return awaitable
     return decorator
 ```
 
@@ -866,9 +864,7 @@ Pipeline → ProcessStage
     ↓
 ToolLoopAgentRunner 开始执行
     ↓
-从 star_handlers_registry 中查找 LLM_TOOL 类型的 handler
-    ↓
-找到对应的 FunctionTool
+在 FunctionToolManager.func_list（即 llm_tools）中查找对应的 FunctionTool
     ↓
 调用 FunctionTool.call(context, **parameters)
     ↓
@@ -876,6 +872,8 @@ ToolLoopAgentRunner 开始执行
 ```
 
 文件：../.venv/Lib/site-packages/astrbot/core/agent/runners/tool_loop_agent_runner.py#L109
+
+工具分发的实际载体是 `FunctionToolManager.func_list`（即 `llm_tools`），不是按 LLM_TOOL 类型从 `star_handlers_registry` 查找；`star_handlers_registry` 只额外注册了一个 `OnCallingFuncToolEvent` 事件 handler。
 
 ## 十、局限性
 
@@ -916,7 +914,7 @@ async def get_user_info(self, event: AstrMessageEvent, user_id: str, platform: s
 
 ### 原因分析
 
-查看 `spec_to_func` 方法（../.venv/Lib/site-packages/astrbot/core/provider/func_tool_manager.py#L341）：
+查看 `spec_to_func` 方法（../.venv/Lib/site-packages/astrbot/core/provider/func_tool_manager.py#L343）：
 
 ```python
 def spec_to_func(self, name, func_args, desc, handler):
@@ -1047,6 +1045,11 @@ async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> Too
 | `ToolSet` | 工具集合类 |
 | `BaseFunctionToolExecutor` | 工具执行器基类 |
 | `llm_tool` | 装饰器，用于注册 LLM 工具 |
+| `agent` | 装饰器，用于注册 SubAgent |
+| `sp` | 会话持久化存储 |
+| `logger` | 插件日志器 |
+| `AstrBotConfig` | AstrBot 配置类 |
+| `html_renderer` | HTML 渲染器 |
 
 ### 相关装饰器
 
@@ -1385,6 +1388,8 @@ class SubAgentRouter(Star):
 |------|------|------|
 | `func_list` | `list[FuncTool]` | 插件通过 `@llm_tool` 注册的工具 + MCP 工具。**不包含**系统内置工具 |
 | `builtin_func_list` | `dict[type[FuncTool], FuncTool]` | 系统内置工具（按类缓存，按需创建）。通过 `get_builtin_tool()` 获取 |
+
+> 注：`FuncTool` 不是独立类，而是 `FuncTool = FunctionTool` 的别名（`func_tool_manager.py#L147`）。
 
 二者的区别：
 - `func_list` 中的工具通过 `get_full_tool_set()` 获取，会被 `_PermissionGuardedTool` 包装以支持权限检查

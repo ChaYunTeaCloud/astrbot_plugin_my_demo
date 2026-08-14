@@ -134,7 +134,7 @@ llm_resp = await ctx.tool_loop_agent(
 | 对比维度 | MainAgent | SubAgent | 原因 |
 |---------|-----------|----------|------|
 | 工具集来源 | `func_list` + `builtin_func_list` | 仅 `func_list` | SubAgent 的 `_build_handoff_toolset` 没有合并 `builtin_func_list` |
-| 系统内置工具数量 | 约 25 个 | 仅 8 个（运行时） | MainAgent 有 Step 9 专门注入 |
+| 系统内置工具数量 | 约 25 个 | 仅运行时基础工具集：sandbox 基础 8 个（ExecuteShell/Python/FileUpload/FileDownload/FileRead/FileWrite/FileEdit/Grep），若 booter=cua 再加 3 个 CUA；local 为 7 个（LocalExecuteShell/ShellSession/LocalPython/FileRead/FileWrite/FileEdit/Grep） | MainAgent 有 Step 9 专门注入 |
 | 网络搜索工具 | ✅ | ❌ | MainAgent 有 Step 8 专门注入 |
 | Skill 辅助工具 | ✅ | ❌ | MainAgent 有 Step 10 专门注入 |
 
@@ -170,7 +170,7 @@ llm_resp = await ctx.tool_loop_agent(
 
 **问题**：`_build_handoff_toolset` 只从 `func_list` 构建工具集，不包含 `builtin_func_list` 中的工具。
 
-**影响**：SubAgent 无法使用 `astrbot_summary_tool`、`astrbot_file_read_tool` 等内置工具。
+**影响**：SubAgent 无法使用 `astrbot_file_read_tool` 等内置工具。
 
 **解决方案**：在 `_build_handoff_toolset` 中补充 `builtin_func_list` 的非运行时工具。
 
@@ -258,23 +258,23 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 
 | 对比项 | MainAgent 源码 | SubAgent 源码 | 差异说明 |
 |--------|---------------|--------------|---------|
-| 入口函数 | [astr_main_agent.py#L499-L594](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L499-L594) `_ensure_persona_and_skills` | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) `_build_handoff_toolset` | MainAgent 从 Persona 解析开始，SubAgent 从 Agent 对象的 tools 字段开始 |
-| 基础工具集来源 | `tmgr.get_full_tool_set()` (L566) → 仅 `func_list` | `tool_mgr.get_full_tool_set()` (L274) → 仅 `func_list` | 相同：都不包含 `builtin_func_list` |
-| 运行时工具注入 | `_apply_sandbox_tools()` / `_apply_local_env_tools()` (L1584-L1587) → 注入全部 `builtin_func_list` | `_get_runtime_computer_tools()` (L263-L267) → 仅注入基础工具集 | **SubAgent 缺失：无搜索、无文件提取、无 Skill 辅助、无摘要等内置工具** |
-| 搜索工具注入 | `_apply_web_search_tools()` (L1579) | ❌ 无 | SubAgent 无法联网搜索 |
-| 知识库工具注入 | `_apply_kb()` (L1573) | ❌ 无 | SubAgent 无法查询知识库 |
-| 文件提取工具 | `_apply_file_extract()` (L1557) | ❌ 无 | SubAgent 无法提取文件内容 |
-| Handoff 工具 | `req.func_tool.add_tool(tool)` (L626) → 注入所有 `transfer_to_*` | 自动排除 Handoff 工具 (L273-L277) | SubAgent 排除 Handoff 防止死循环 |
-| 插件工具过滤 | `_plugin_tool_fix()` (L1564) | ❌ 无 | SubAgent 无会话级插件过滤 |
+| 入口函数 | [astr_main_agent.py#L522](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L522) `_ensure_persona_and_skills` | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) `_build_handoff_toolset` | MainAgent 从 Persona 解析开始，SubAgent 从 Agent 对象的 tools 字段开始 |
+| 基础工具集来源 | `tmgr.get_full_tool_set()` (L603) → 仅 `func_list` | `tool_mgr.get_full_tool_set()` (L274) → 仅 `func_list` | 相同：都不包含 `builtin_func_list` |
+| 运行时工具注入 | `_apply_sandbox_tools()` / `_apply_local_env_tools()` (L1621-L1624) → 注入全部 `builtin_func_list` | `_get_runtime_computer_tools()` (L263-L267) → 仅注入基础工具集 | **SubAgent 缺失：无搜索、无文件提取、无 Skill 辅助、无摘要等内置工具** |
+| 搜索工具注入 | `_apply_web_search_tools()` (L1616) | ❌ 无 | SubAgent 无法联网搜索 |
+| 知识库工具注入 | `_apply_kb()` (L1610) | ❌ 无 | SubAgent 无法查询知识库 |
+| 文件提取工具 | `_apply_file_extract()` (L1596) | ❌ 无 | SubAgent 无法提取文件内容 |
+| Handoff 工具 | `req.func_tool.add_tool(tool)` (L663) → 注入所有 `transfer_to_*` | 自动排除 Handoff 工具 (L273-L277) | SubAgent 排除 Handoff 防止死循环 |
+| 插件工具过滤 | `_plugin_tool_fix()` (L1615) | ❌ 无 | SubAgent 无会话级插件过滤 |
 
 ### Skill 注入对比
 
 | 对比项 | MainAgent 源码 | SubAgent 源码 | 差异说明 |
 |--------|---------------|--------------|---------|
-| Skill 列表获取 | `skill_manager.list_skills(active_only=True, runtime=runtime)` (L532) | ❌ 无 | SubAgent 不获取 Skill 列表 |
-| Persona Skill 过滤 | `persona.get("skills")` (L543) → 按 Persona 配置过滤 | `subagent_orchestrator.py` L66-L87 未读取 `skills` 字段 | SubAgent 完全忽略 Persona 的 skills 配置 |
-| Workspace Skills | `skill_manager.list_workspace_skills()` (L540) | ❌ 无 | SubAgent 无法使用工作区 Skill |
-| Skill Prompt 注入 | `req.system_prompt += build_skills_prompt(skills)` (L555) | ❌ 无 | SubAgent 的 system_prompt 不含 Skill 信息 |
+| Skill 列表获取 | `skill_manager.list_skills(active_only=True, runtime=runtime)` (L569) | ❌ 无 | SubAgent 不获取 Skill 列表 |
+| Persona Skill 过滤 | `persona.get("skills")` (L580) → 按 Persona 配置过滤 | `subagent_orchestrator.py` L66-L87 未读取 `skills` 字段 | SubAgent 完全忽略 Persona 的 skills 配置 |
+| Workspace Skills | `skill_manager.list_workspace_skills()` (L577) | ❌ 无 | SubAgent 无法使用工作区 Skill |
+| Skill Prompt 注入 | `req.system_prompt += build_skills_prompt(skills)` (L592) | ❌ 无 | SubAgent 的 system_prompt 不含 Skill 信息 |
 
 ### Persona 应用对比
 
@@ -283,15 +283,15 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 | system_prompt 来源 | `persona["prompt"]` + 多段追加（Skill、router 等） | `persona_data.get("prompt")` 直接赋值 | SubAgent 仅使用 Persona prompt 原文 |
 | begin_dialogs | `persona.get("_begin_dialogs_processed")` (L521) | `persona_data.get("_begin_dialogs_processed")` (subagent_orchestrator.py#L71) | 相同 |
 | tools 过滤 | `persona.get("tools")` (L565) → 按列表过滤 | `persona_data.get("tools")` (subagent_orchestrator.py#L73) → 按列表过滤 | 相同 |
-| skills 过滤 | `persona.get("skills")` (L543) → 按列表过滤 | ❌ 未读取 | SubAgent 完全忽略 skills 配置 |
+| skills 过滤 | `persona.get("skills")` (L580) → 按列表过滤 | ❌ 未读取 | SubAgent 完全忽略 skills 配置 |
 
 ### 执行方式对比
 
 | 对比项 | MainAgent 源码 | SubAgent 源码 | 差异说明 |
 |--------|---------------|--------------|---------|
-| 执行引擎 | `AgentRunner()` (astr_main_agent.py#L1589) | `tool_loop_agent()` (astr_agent_tool_exec.py#L363) | MainAgent 用 AgentRunner，SubAgent 用 Provider 的 tool_loop |
+| 执行引擎 | `AgentRunner()` (astr_main_agent.py#L1626) | `tool_loop_agent()` (astr_agent_tool_exec.py#L363) | MainAgent 用 AgentRunner，SubAgent 用 Provider 的 tool_loop |
 | Provider 选择 | 全局默认 + fallback | 可通过 `provider_id` 配置专用 | SubAgent 支持 Provider 覆盖 |
-| 最大步数 | `config.max_context_length` | `agent_max_step` (L361) | SubAgent 有独立的最大步数配置 |
+| 最大步数 | `provider_settings.max_agent_step`（internal.py L62 `settings.get("max_agent_step", 30)`） | `agent_max_step` (L361) | SubAgent 有独立的最大步数配置 |
 | 流式响应 | `config.streaming_response` | `stream` (L362) | SubAgent 支持独立的流式配置 |
 | Context 注入 | `AgentContextWrapper` | `contexts` 参数 | SubAgent 直接传 contexts |
 
@@ -310,19 +310,19 @@ system_prompt = agent.instructions + "\n" + skill_prompt
 
 | # | Bug/限制描述 | 影响范围 | 源码位置 | 根因分析 | 临时解决方案 |
 |---|-------------|---------|---------|---------|-------------|
-| 1 | **SubAgent 缺失系统内置工具** | SubAgent 无法使用摘要、文件读写、搜索等 25+ 内置工具 | [astr_agent_tool_exec.py#L271-L285](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L271-L285) `_build_handoff_toolset` | 仅从 `func_list` 构建，未合并 `builtin_func_list`。而 MainAgent 通过 [astr_main_agent.py#L1584-L1587](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1584-L1587) 单独注入内置工具 | 自定义 `call_sub_agent` 工具时手动补充 `builtin_func_list` 工具 |
+| 1 | **SubAgent 缺失系统内置工具** | SubAgent 无法使用摘要、文件读写、搜索等 25+ 内置工具 | [astr_agent_tool_exec.py#L271-L285](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L271-L285) `_build_handoff_toolset` | 仅从 `func_list` 构建，未合并 `builtin_func_list`。而 MainAgent 通过 [astr_main_agent.py#L1621-L1624](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1621-L1624) 单独注入内置工具 | 自定义 `call_sub_agent` 工具时手动补充 `builtin_func_list` 工具 |
 | 2 | **SubAgent 完全看不到 Skill** | SubAgent system_prompt 中无任何 Skill 信息 | [subagent_orchestrator.py#L83-L87](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L83-L87) | 构建 `Agent` 对象时未读取 Persona 的 `skills` 字段；[agent.py#L10-L15](../.venv/Lib/site-packages/astrbot/core/agent/agent.py#L10-L15) `Agent` 类本身无 `skills` 属性 | 手动调用 `SkillManager.list_skills()` + `build_skills_prompt()` 注入到 system_prompt |
 | 3 | **Persona Skill 配置对 SubAgent 无效** | WebUI 配置 Persona Skill 后 SubAgent 仍看不到 | [subagent_orchestrator.py#L66-L87](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L66-L87) | 第 73 行仅读取 `tools` 字段，未读取 `skills` 字段（第 73 行 `tools = persona_data.get("tools")` 之后缺少 `skills = persona_data.get("skills")` 的对应处理） | 在 plugin 层自行读取 Persona 的 skills 配置并注入 |
-| 4 | **SubAgent 无网络搜索能力** | SubAgent 无法使用 Tavily/Brave/Exa 等搜索工具 | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) | SubAgent 构建工具集时未调用 [astr_main_agent.py#L1579](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1579) 的 `_apply_web_search_tools()` | 自定义工具时手动添加搜索工具到 toolset |
-| 5 | **SubAgent 无知识库能力** | SubAgent 无法查询已配置的知识库 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) `_execute_handoff` | 执行路径未经过 [astr_main_agent.py#L1573](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1573) 的 `_apply_kb()` | 在自定义 handler 中手动添加 KB 工具或直接调用 `retrieve_knowledge_base()` |
-| 6 | **SubAgent 无文件提取能力** | SubAgent 无法从 URL 提取文件内容 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | 执行路径未经过 [astr_main_agent.py#L1557-L1561](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1557-L1561) 的 `_apply_file_extract()` | 暂无，需自行实现文件提取逻辑 |
+| 4 | **SubAgent 无网络搜索能力** | SubAgent 无法使用 Tavily/Brave/Exa 等搜索工具 | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) | SubAgent 构建工具集时未调用 [astr_main_agent.py#L1616](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1616) 的 `_apply_web_search_tools()` | 自定义工具时手动添加搜索工具到 toolset |
+| 5 | **SubAgent 无知识库能力** | SubAgent 无法查询已配置的知识库 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) `_execute_handoff` | 执行路径未经过 [astr_main_agent.py#L1610](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1610) 的 `_apply_kb()` | 在自定义 handler 中手动添加 KB 工具或直接调用 `retrieve_knowledge_base()` |
+| 6 | **SubAgent 无文件提取能力** | SubAgent 无法从 URL 提取文件内容 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | 执行路径未经过 [astr_main_agent.py#L1596](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1596) 的 `_apply_file_extract()` | 暂无，需自行实现文件提取逻辑 |
 | 7 | **SubAgent 无插件工具过滤** | SubAgent 可能使用到当前会话未启用的插件工具 | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) | 未调用 [astr_main_agent.py#L1042-L1068](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1042-L1068) 的 `_plugin_tool_fix()` | 自定义工具时自行实现插件级过滤 |
 | 8 | **SubAgent 无法调用其他 SubAgent** | SubAgent 不能嵌套调用 `transfer_to_*` 工具 | [astr_agent_tool_exec.py#L273-L277](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L273-L277) | `_build_handoff_toolset` 显式排除了所有 `HandoffTool`（防止死循环） | 通过 plugin 实现"SubAgent 路由"模式 |
-| 9 | **SubAgent 无主动消息能力** | SubAgent 无法主动向用户发送消息 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | 未经过 [astr_main_agent.py#L1598-L1605](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1598-L1605) 的主动消息工具注入 | 暂无，需通过 MainAgent 间接发送 |
+| 9 | **SubAgent 无主动消息能力** | SubAgent 无法主动向用户发送消息 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | 未经过 [astr_main_agent.py#L1635-L1642](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1635-L1642) 的主动消息工具注入 | 暂无，需通过 MainAgent 间接发送 |
 | 10 | **SubAgent 无 Skill 辅助工具** | SubAgent 无法使用 Skill Candidate 管理等工具 | [astr_agent_tool_exec.py#L248-L302](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L248-L302) | `_build_handoff_toolset` 仅注入运行时基础工具集，不包含 Skill 相关内置工具 | 自定义工具时手动添加 Skill 辅助工具 |
 | 11 | **Persona 工具列表过滤逻辑不一致** | Persona `tools=None` 时 MainAgent 用全量，SubAgent 也用全量但子集不同 | [astr_main_agent.py#L579-L593](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L579-L593) vs [astr_agent_tool_exec.py#L271-L285](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L271-L285) | 两处都以 `get_full_tool_set()` 为基础，但 MainAgent 后续还有额外注入步骤，SubAgent 没有 | 无 |
-| 12 | **SubAgent 无摘要压缩能力** | SubAgent 历史对话无自动压缩 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | `tool_loop_agent` 未传入压缩相关参数；MainAgent 有 `llm_compress_instruction` 等配置 ([astr_main_agent.py#L1687-L1689](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1687-L1689)) | 暂无，依赖 Provider 自身的上下文窗口 |
-| 13 | **SubAgent 路由 Prompt 未注入** | SubAgent 看不到 `router_system_prompt` | [astr_main_agent.py#L650-L656](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L650-L656) | `router_system_prompt` 仅注入到 MainAgent 的 system_prompt，SubAgent 的 system_prompt 仅来自 Persona | 如需 SubAgent 感知路由信息，需在 Persona 中手动包含 |
+| 12 | **SubAgent 无摘要压缩能力** | SubAgent 历史对话无自动压缩 | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | `tool_loop_agent` 未传入压缩相关参数；MainAgent 有 `llm_compress_instruction` 等配置 ([astr_main_agent.py#L1724](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L1724)) | 暂无，依赖 Provider 自身的上下文窗口 |
+| 13 | **SubAgent 路由 Prompt 未注入** | SubAgent 看不到 `router_system_prompt` | [astr_main_agent.py#L673-L679](../.venv/Lib/site-packages/astrbot/core/astr_main_agent.py#L673-L679) | `router_system_prompt` 仅注入到 MainAgent 的 system_prompt，SubAgent 的 system_prompt 仅来自 Persona | 如需 SubAgent 感知路由信息，需在 Persona 中手动包含 |
 | 14 | **`Agent` 类设计局限** | `Agent` 类缺少 `skills`、`metadata` 等字段 | [agent.py#L10-L15](../.venv/Lib/site-packages/astrbot/core/agent/agent.py#L10-L15) | 设计时未考虑 Skill 直接绑定到 Agent，Skill 仅作为 prompt 注入机制 | 可通过继承 `Agent` 添加自定义字段 |
 | 15 | **Persona 数据修改后不实时生效** | WebUI 修改 Persona 的 tools/system_prompt/begin_dialogs 后 SubAgent 需重启 | [subagent_orchestrator.py#L29-L104](../.venv/Lib/site-packages/astrbot/core/subagent_orchestrator.py#L29-L104) | `reload_from_config()` 仅启动时调用，`update_persona()` 不通知 SubAgentOrchestrator 重新加载 | 重启 AstrBot，或在插件中直接从 `PersonaManager` 实时读取 |
 | 16 | **SubAgent 的 Skill 根本不生效** | Persona 配置的 skills 对 SubAgent 完全无效（不是延迟生效，是框架未实现） | [astr_agent_tool_exec.py#L363-L374](../.venv/Lib/site-packages/astrbot/core/astr_agent_tool_exec.py#L363-L374) | SubAgent 执行路径无 Skill 注入逻辑；`tool_loop_agent()` 不接收 skills 参数 | 在插件中手动调用 `SkillManager.list_skills()` + `build_skills_prompt()` 注入到 system_prompt |

@@ -64,20 +64,20 @@ YAML frontmatter 中的 `name` 和 `description` 会被提取出来，注入到 
 SkillManager 在 [skill_manager.py#L493-648](../.venv/Lib/site-packages/astrbot/core/skills/skill_manager.py#L493-L648) 中按以下顺序发现 Skill：
 
 ```text
-1. 扫描 skills/ 目录下的所有子目录
+1. 扫描 skills/ 目录下的所有子目录（本地 Skill）
    → 读取 SKILL.md 的 frontmatter 获取 name 和 description
    → 检查 sandbox_skills_cache.json 中是否存在对应记录
    → 如果存在：source_type=both, source_label=synced
    → 如果不存在：source_type=local_only, source_label=local
 
-2. 扫描 plugins/ 下各插件的 skills/ 子目录
+2. 扫描 plugins/ 下各插件的 skills/ 子目录（插件 Skill）
    → source_type=plugin, source_label=插件名
 
-3. 如果 runtime=local，扫描工作区 skills/ 目录
-   → source_type=workspace, source_label=workspace
-
-4. 如果 runtime=sandbox，检查 sandbox_skills_cache.json
+3. 如果 runtime=sandbox，检查 sandbox_skills_cache.json
    → 补充 sandbox_only 类型的 Skill
+
+（注意：workspace Skill 不在 list_skills() 中，而是由独立的
+ list_workspace_skills() 方法发现，由调用方单独合并。）
 ```
 
 ### Sandbox 同步机制
@@ -132,7 +132,16 @@ runtime = cfg.get("computer_use_runtime", "local")
 skill_manager = SkillManager()
 skills = skill_manager.list_skills(active_only=True, runtime=runtime)
 
-# 2. 过滤 Persona 指定的 Skill
+# 2. 按当前配置过滤（_filter_skills_for_current_config，按 plugin_set 过滤插件 Skill）
+skills = _filter_skills_for_current_config(skills, cfg)
+
+# 3. runtime=local 时合并 workspace Skill
+workspace_skills = []
+if runtime == "local":
+    workspace_root = await _get_workspace_path_for_umo(event.unified_msg_origin, plugin_context)
+    workspace_skills.extend(skill_manager.list_workspace_skills(workspace_root))
+
+# 4. 过滤 Persona 指定的 Skill
 if persona and persona.get("skills") is not None:
     if not persona["skills"]:
         skills = []
@@ -140,7 +149,14 @@ if persona and persona.get("skills") is not None:
         allowed = set(persona["skills"])
         skills = [s for s in skills if s.name in allowed]
 
-# 3. 注入到 system prompt
+# 5. 合并 workspace Skill（优先级最高）
+if workspace_skills and (not persona or persona.get("skills") != []):
+    skills_by_name = {s.name: s for s in skills}
+    for s in workspace_skills:
+        skills_by_name[s.name] = s
+    skills = [skills_by_name[name] for name in sorted(skills_by_name)]
+
+# 6. 注入到 system prompt
 if skills:
     req.system_prompt += f"\n{build_skills_prompt(skills)}\n"
 ```
@@ -202,7 +218,7 @@ SkillManager(
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `list_skills` | `(active_only=True, runtime="local", show_sandbox_path=True) -> list[SkillInfo]` | 列出所有 Skill |
+| `list_skills` | `(*, active_only=False, runtime="local", show_sandbox_path=True) -> list[SkillInfo]` | 列出所有 Skill |
 | `list_workspace_skills` | `(workspace_root) -> list[SkillInfo]` | 列出工作区中的 Skill |
 | `set_skill_active` | `(name, active) -> None` | 启用/禁用 Skill |
 | `delete_skill` | `(name) -> None` | 删除 Skill |
@@ -227,6 +243,7 @@ class SkillInfo:
     sandbox_exists: bool = False # Sandbox 中是否存在
     plugin_name: str = ""        # 所属插件名
     readonly: bool = False        # 是否只读
+    preset: bool = False          # 是否为内置预设插件 Skill
 ```
 
 ### 使用示例
@@ -463,7 +480,7 @@ Skill 注入逻辑**只存在于主 Agent 的代码路径**中：
 
 ```text
 主 Agent：
-  Pipeline → build_initial_request()
+  Pipeline → build_main_agent()
     → skill_manager.list_skills()
     → build_skills_prompt(skills)
     → req.system_prompt += skills_prompt  ← Skill 注入
@@ -473,7 +490,7 @@ SubAgent：
   _execute_handoff()
     → _build_handoff_toolset()
     → ctx.tool_loop_agent(system_prompt=agent.instructions)
-    → ToolLoopAgentRunner.run()
+    → step_until_done()
     → provider.text_chat()              ← 无 Skill 注入
 ```
 

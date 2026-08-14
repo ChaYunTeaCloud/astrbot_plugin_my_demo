@@ -124,8 +124,10 @@ LLM 响应结果封装。
 | `tools_call_args` | `list[dict]` | 工具调用参数 |
 | `tools_call_name` | `list[str]` | 工具调用名称 |
 | `tools_call_ids` | `list[str]` | 工具调用 ID |
+| `tools_call_extra_content` | `dict[str, dict[str, Any]]` | 工具调用附加内容（tool_call_id → extra_content） |
 | `reasoning_content` | `str \| None` | 推理内容（如思维链） |
-| `raw_completion` | `ChatCompletion \| GenerateContentResponse \| AnthropicMessage \| None` | 原始 LLM 响应 |
+| `reasoning_signature` | `str \| None` | 推理内容签名 |
+| `raw_completion` | `ChatCompletion \| Response \| GenerateContentResponse \| AnthropicMessage \| None` | 原始 LLM 响应 |
 | `is_chunk` | `bool` | 是否为分块响应 |
 | `id` | `str \| None` | 响应 ID |
 | `usage` | `TokenUsage \| None` | Token 使用量 |
@@ -135,7 +137,7 @@ LLM 响应结果封装。
 | 方法 | 说明 |
 |------|------|
 | `to_openai_tool_calls()` | 转换为 OpenAI 工具调用格式（已过时） |
-| `to_openai_to_calls_model()` | 转换为 Pydantic 模型格式的工具调用 |
+| `to_openai_tool_calls_model()` | 转换为 Pydantic 模型格式的工具调用（`to_openai_to_calls_model` 为错误拼写的弃用别名） |
 
 ### 4.3 ProviderMeta（Provider 实例元数据）
 
@@ -259,6 +261,7 @@ class RerankResult:
 | `system_prompt` | `str \| None` | 系统提示词 |
 | `tool_calls_result` | `ToolCallsResult \| list[ToolCallsResult] \| None` | 工具调用结果 |
 | `model` | `str \| None` | 模型名 |
+| `extra_user_content_parts` | `list[ContentPart] \| None` | 额外的用户消息内容块（系统提醒、指令等） |
 | `tool_choice` | `Literal["auto", "required"]` | 工具调用策略 |
 | `request_max_retries` | `int \| None` | 最大重试次数 |
 

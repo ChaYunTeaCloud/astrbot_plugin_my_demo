@@ -188,7 +188,7 @@ image_url = await html_renderer.render_custom_template(
 
 ## 六、logger（日志记录器）
 
-**源码**：`../.venv/Lib/site-packages/astrbot/core/__init__.py`（第 36 行）
+**源码**：`../.venv/Lib/site-packages/astrbot/api/__init__.py`（`_PluginContextLogger` 代理对象，路由到 `core/log.py` 的 `LogManager`）
 
 AstrBot 全局日志记录器，用于输出日志信息。
 
@@ -240,15 +240,15 @@ async def get_async(
 )
 ```
 
-**set_async**（异步设置）
+**put_async**（异步写入）
 
 ```python
-async def set_async(
+async def put_async(
     self,
-    scope: str,
-    scope_id: str,
-    key: str,
-    value               # 值
+    scope: str,          # 作用域（如 "plugin_config"）
+    scope_id: str,        # 作用域 ID（如 插件名 或 用户 ID）
+    key: str,             # 配置键
+    value                 # 值
 )
 ```
 
@@ -260,8 +260,10 @@ async def range_get_async(
     scope: str,
     scope_id: str | None = None,
     key: str | None = None
-)
+) -> list[Preference]
 ```
+
+> 注意：`range_get_async` 返回 `list[Preference]`，其中 `Preference.value` 是一个 dict，`value["val"]` 才是实际值。
 
 ### 使用示例
 
@@ -269,7 +271,7 @@ async def range_get_async(
 from astrbot.api import sp
 
 # 保存用户偏好
-await sp.set_async(
+await sp.put_async(
     scope="my_plugin",
     scope_id="user_123",
     key="theme",

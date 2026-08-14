@@ -55,7 +55,7 @@ class Personality(TypedDict):
     prompt: str                          # 系统提示词
     name: str                            # 名称（对应 Persona.persona_id）
     begin_dialogs: list[str]             # 预设对话原始列表
-    mood_imitation_dialogs: list         # 已废弃
+    mood_imitation_dialogs: list[str]   # 已废弃
     tools: list | None                   # 工具白名单
     skills: list | None                  # Skill 白名单
     custom_error_message: str | None     # 自定义错误消息
@@ -241,7 +241,7 @@ if persona:
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `get_default_persona_v3(umo)` | `async (umo) → Personality` | 获取当前会话的默认 Persona |
-| `resolve_selected_persona(...)` | `async (umo, ...) → tuple` | 解析会话最终生效的 Persona（考虑会话级覆盖） |
+| `resolve_selected_persona(...)` | `async (*, umo, conversation_persona_id, platform_name, provider_settings=None) → tuple[str \| None, Personality \| None, str \| None, bool]` | 解析会话最终生效的 Persona（考虑会话级覆盖） |
 | `get_all_personas()` | `async () → list[Persona]` | 获取所有 Persona |
 | `get_personas_by_folder(folder_id)` | `async (folder_id) → list[Persona]` | 获取指定文件夹下的 Persona |
 
@@ -301,7 +301,7 @@ WebUI 请求
 完整的更新链条：
 
 1. 数据库写入新数据
-2. `PersonaManager.reload()` 重新加载
+2. `create_persona()` / `update_persona()` / `delete_persona()` 各自内部直接调用 `get_v3_persona_data()` 重建缓存（不存在 `reload()` 方法）
 3. MainAgent 下次请求时使用最新 Persona
 4. SubAgent 需要触发 `SubAgentOrchestrator.reload_from_config()` 才会更新
 
@@ -317,15 +317,15 @@ MainAgent **每次请求前**都会动态解析 Persona：
 用户消息到达
     → Pipeline 处理
     → InternalAgentSubStage
-        → build_main_agent()
-            → person_manager.resolve_selected_persona(umo, ...)
+        → build_main_agent()（astr_main_agent.py#L1412）
+            → person_manager.resolve_selected_persona(umo, ...)（调用于 astr_main_agent.py#L543）
                 → 考虑会话级覆盖
                 → 考虑平台特殊默认
                 → 返回当前会话应使用的 Personality
             → 从 Personality 提取 system_prompt、tools、skills 等
-            → 注入 Skill prompt
+            → 注入 Skill prompt（_ensure_persona_and_skills，astr_main_agent.py#L522）
             → 构建 ProviderRequest
-        → AgentRunner.run()
+        → step_until_done()
 ```
 
 **特点**：
@@ -772,7 +772,7 @@ DEFAULT_PERSONALITY = Personality(
 from astrbot.api import sp
 
 # 设置会话级 Persona
-await sp.set_async(
+await sp.put_async(
     scope="umo",
     scope_id=str(event.unified_msg_origin),
     key="session_service_config",

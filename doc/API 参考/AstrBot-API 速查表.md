@@ -18,7 +18,7 @@ from astrbot.api import (
     html_renderer,           # HTML 渲染器
     llm_tool,                # @register_llm_tool 装饰器
     logger,                  # 日志记录器（自动路由到插件日志）
-    sp,                      # 系统提示词工具
+    sp,                      # SharedPreferences 偏好设置存储
 )
 ```
 
@@ -47,7 +47,7 @@ from astrbot.api.all import (
     event_message_type,
     regex,
     platform_adapter_type,
-    register,               # 注册插件
+    register,               # 注册插件（已废弃）
     llm_tool,
     
     # Star 类
@@ -90,7 +90,7 @@ from astrbot.api.all import (
 | `Context` | 类 | 插件上下文，提供各种 API 访问 |
 | `Star` | 类 | 插件基类 |
 | `StarTools` | 类 | 插件工具集 |
-| `register` | 装饰器 | 注册插件 (`@register_star`) |
+| `register` | 装饰器 | 注册插件 (`@register_star`，已废弃) |
 
 ```python
 from astrbot.api.star import Context, Star, register
@@ -157,20 +157,20 @@ from astrbot.api.event import (
 | `@custom_filter` | 自定义过滤器 |
 | `@permission_type` | 按权限注册 |
 | `@llm_tool` | 注册 LLM 工具 |
-| `@on_llm_request` | LLM 请求前触发 |
-| `@on_llm_response` | LLM 响应后触发 |
-| `@on_llm_tool_respond` | LLM 工具响应时触发 |
-| `@on_using_llm_tool` | 使用 LLM 工具时触发 |
-| `@on_waiting_llm_request` | 等待 LLM 请求时触发 |
-| `@on_agent_begin` | Agent 开始执行时触发 |
-| `@on_agent_done` | Agent 完成执行时触发 |
-| `@on_plugin_loaded` | 插件加载后触发 |
-| `@on_plugin_unloaded` | 插件卸载后触发 |
-| `@on_plugin_error` | 插件错误时触发 |
-| `@on_platform_loaded` | 平台加载后触发 |
-| `@on_astrbot_loaded` | AstrBot 加载后触发 |
-| `@on_decorating_result` | 装饰结果时触发 |
-| `@after_message_sent` | 消息发送后触发 |
+| `@on_llm_request()` | LLM 请求前触发 |
+| `@on_llm_response()` | LLM 响应后触发 |
+| `@on_llm_tool_respond()` | LLM 工具响应时触发 |
+| `@on_using_llm_tool()` | 使用 LLM 工具时触发 |
+| `@on_waiting_llm_request()` | 等待 LLM 请求时触发 |
+| `@on_agent_begin()` | Agent 开始执行时触发 |
+| `@on_agent_done()` | Agent 完成执行时触发 |
+| `@on_plugin_loaded()` | 插件加载后触发 |
+| `@on_plugin_unloaded()` | 插件卸载后触发 |
+| `@on_plugin_error()` | 插件错误时触发 |
+| `@on_platform_loaded()` | 平台加载后触发 |
+| `@on_astrbot_loaded()` | AstrBot 加载后触发 |
+| `@on_decorating_result()` | 装饰结果时触发 |
+| `@after_message_sent()` | 消息发送后触发 |
 
 ```python
 from astrbot.api.event.filter import command, on_llm_request
@@ -179,7 +179,7 @@ from astrbot.api.event.filter import command, on_llm_request
 async def test_command(self, event):
     pass
 
-@on_llm_request
+@on_llm_request()
 async def before_llm(self, event):
     pass
 ```
@@ -268,7 +268,7 @@ from astrbot.api.message_components import Plain, Image, At
 
 chain = [
     Plain(text="Hello"),
-    At(user_id="123456"),
+    At(qq="123456"),
     Image(url="https://example.com/img.jpg"),
 ]
 ```
@@ -323,7 +323,7 @@ from astrbot.api.message_components import Plain, Image, At
 async def send_rich_message(event: AstrMessageEvent):
     chain = [
         Plain(text="这是一条富文本消息\n"),
-        At(user_id=event.get_sender_id()),
+        At(qq=event.get_sender_id()),
         Plain(text="\n请看这张图片:\n"),
         Image(url="https://example.com/pic.png"),
     ]
@@ -358,7 +358,7 @@ from astrbot.api.event.filter import (
 )
 
 @command("group_test")
-@event_message_type(EventMessageType.GROUP)
+@event_message_type(EventMessageType.GROUP_MESSAGE)
 async def group_only(self, event):
     """仅在群聊中生效"""
     yield event.make_result().message("这是群聊命令")
@@ -373,18 +373,18 @@ from astrbot.api.event.filter import (
     on_astrbot_loaded,
 )
 
-@on_llm_request
+@on_llm_request()
 async def before_llm_request(self, event):
     """在 LLM 请求前修改"""
     # 可以在这里修改 system_prompt 或 prompt
     pass
 
-@on_plugin_loaded
+@on_plugin_loaded()
 async def on_my_plugin_loaded(self):
     """插件加载完成后"""
     pass
 
-@on_astrbot_loaded
+@on_astrbot_loaded()
 async def on_astrbot_ready(self):
     """AstrBot 完全启动后"""
     pass

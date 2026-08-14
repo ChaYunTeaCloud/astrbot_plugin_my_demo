@@ -40,7 +40,7 @@ from astrbot.core.message.components import *
 
 ### 3.1 ComponentType（组件类型枚举）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L44
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L46
 
 ```python
 class ComponentType(str, Enum):
@@ -69,7 +69,7 @@ class ComponentType(str, Enum):
 
 ### 3.2 BaseMessageComponent（消息组件基类）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L71
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L73
 
 所有消息组件的基类。
 
@@ -92,7 +92,7 @@ class ComponentType(str, Enum):
 
 ### 4.1 Plain（文本消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L111
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L113
 
 ```python
 class Plain(BaseMessageComponent):
@@ -110,7 +110,7 @@ Comp.Plain(text="Hello World")
 
 ### 4.2 Image（图片消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L499
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L501
 
 **属性**：
 
@@ -156,7 +156,7 @@ Comp.Image(file="path/to/image.png")
 
 ### 4.3 Record（语音消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L133
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L135
 
 **属性**：
 
@@ -185,7 +185,7 @@ Comp.Image(file="path/to/image.png")
 
 ### 4.4 Video（视频消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L286
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L288
 
 **属性**：
 
@@ -213,7 +213,7 @@ Comp.Image(file="path/to/image.png")
 
 ### 4.5 File（文件消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L761
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L763
 
 **属性**：
 
@@ -241,7 +241,7 @@ Comp.File(name="data.zip", url="https://example.com/data.zip")
 
 ### 4.6 At（@消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L408
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L410
 
 ```python
 class At(BaseMessageComponent):
@@ -262,7 +262,7 @@ Comp.At(qq="all")
 
 ### 4.7 AtAll（@所有人）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L423
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L425
 
 `At` 的子类，`qq="all"`。
 
@@ -272,7 +272,7 @@ Comp.AtAll()
 
 ### 4.8 Reply（回复消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L582
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L584
 
 **属性**：
 
@@ -293,7 +293,7 @@ Comp.Reply(id="msg_123")
 
 ### 4.9 Face（QQ 表情）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L125
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L127
 
 ```python
 class Face(BaseMessageComponent):
@@ -309,7 +309,7 @@ Comp.Face(id=123)
 
 ### 4.10 Poke（戳一戳）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L612
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L614
 
 **属性**：
 
@@ -330,7 +330,7 @@ Comp.Poke(id=123456)
 
 ### 4.11 Node（合并转发节点）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L653
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L655
 
 **属性**：
 
@@ -352,7 +352,7 @@ node = Comp.Node(
 
 ### 4.12 Nodes（合并转发消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L707
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L709
 
 ```python
 class Nodes(BaseMessageComponent):
@@ -371,7 +371,7 @@ nodes = Comp.Nodes([
 
 ### 4.13 Share（分享消息）
 
-**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L451
+**文件**：../.venv/Lib/site-packages/astrbot/core/message/components.py#L453
 
 ```python
 class Share(BaseMessageComponent):

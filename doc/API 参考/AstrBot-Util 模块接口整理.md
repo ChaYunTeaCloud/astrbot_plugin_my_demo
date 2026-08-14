@@ -61,7 +61,7 @@ async def ask_question(self, controller: SessionController, event):
     await event.send(event.make_result().message(f"您好，{reply}！"))
     
     # 如果需要继续等待，可以再次 yield 或使用 controller.keep()
-    controller.keep(30)  # 继续保持会话 30 秒
+    controller.keep(30)  # 在剩余时间上累加 30 秒（reset_timeout 默认为 False）
 ```
 
 **工作原理**：
@@ -81,6 +81,7 @@ async def ask_question(self, controller: SessionController, event):
 
 | 属性 | 类型 | 说明 |
 |------|------|------|
+| `future` | `asyncio.Future` | 会话结束信号，供 `await` 使用 |
 | `current_event` | `asyncio.Event \| None` | 当前正在等待的异步事件 |
 | `history_chains` | `list[list[BaseMessageComponent]]` | 历史消息链列表 |
 | `ts` | `float \| None` | 上次保持开始的时间 |
@@ -98,7 +99,7 @@ async def ask_question(self, controller: SessionController, event):
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `timeout` | `float` | 超时时间（秒），必填 |
+| `timeout` | `float` | 超时时间（秒），默认 0 |
 | `reset_timeout` | `bool` | True=重置超时时间，False=累计超时时间 |
 
 **使用示例**：

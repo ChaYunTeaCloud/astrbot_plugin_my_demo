@@ -38,7 +38,7 @@
 
 | 名称 | 类型 | 说明 |
 |------|------|------|
-| `logger` | 对象 | AstrBot 全局日志记录器，用于插件打印日志 |
+| `logger` | 对象 | `_PluginContextLogger` 代理，路由到调用方插件专属 logger（`astrbot.plugin.<plugin_name>`），非插件调用方回退到全局 logger |
 | `sp` | 对象 | 特殊工具集（具体用途需查文档） |
 | `html_renderer` | 对象 | HTML 渲染器，用于生成富文本消息 |
 | `AstrBotConfig` | 类 | AstrBot 配置对象（通过 Context.get_config() 获取） |
@@ -158,7 +158,7 @@ async def my_handler(event: AstrMessageEvent):
 ```python
 from astrbot.api.event import filter
 
-@filter.command(name="hello", desc="打招呼")
+@filter.command(command_name="hello", desc="打招呼")
 @filter.event_message_type(EventMessageType.ALL)
 async def hello_command(event):
     return event.make_result().message("你好！")
@@ -351,7 +351,7 @@ class MyPlugin(Star):
 ```python
 from astrbot.api.util import session_waiter, SessionController
 
-@filter.command(name="ask", desc="提问")
+@filter.command(command_name="ask", desc="提问")
 async def ask_command(event):
     result = event.make_result()
     result.message("请输入你的名字：")
@@ -378,11 +378,12 @@ from astrbot.api.all import *
 - `AstrBotConfig`、`logger`、`html_renderer`
 - `MessageEventResult`、`MessageChain`、`CommandResult`、`EventResultType`
 - `AstrMessageEvent`
-- `Star`、`Context`、`register`、`StarTools`
-- 所有 `filter` 装饰器
+- `Star`、`Context`、`register`
+- `filter` 装饰器仅 re-export 5 个：`command`、`command_group`、`event_message_type`、`regex`、`platform_adapter_type`（不含 `on_llm_request`/`on_llm_response`/`llm_tool`/`on_agent_begin` 等钩子装饰器）
 - `EventMessageTypeFilter`、`EventMessageType`
 - `PlatformAdapterTypeFilter`、`PlatformAdapterType`
 - 平台相关类（`Platform`、`PlatformMetadata` 等）
+- `Provider`、`ProviderMetaData`、`Personality`
 - 消息组件（通过 `message_components` 通配导入）
 
 > 注意：通配导入在大型项目中可能导致命名冲突，建议仅在小型插件或快速原型中使用。
